@@ -284,16 +284,20 @@ async def stream_job(job_id: str, request: Request):
                 if await request.is_disconnected():
                     break
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
                 except asyncio.TimeoutError:
+                    # Heartbeat keeps Render / proxy from killing the idle SSE connection
+                    yield ": heartbeat\n\n"
                     continue
-                
+
                 yield f"data: {json.dumps(event)}\n\n"
-                
+
                 if event["type"] == "complete":
+                    active_streams.pop(job_id, None)
                     break
-        finally:
-            active_streams.pop(job_id, None)
+        except Exception:
+            pass
+        # Do NOT pop on disconnect — queue must survive reconnects until complete
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

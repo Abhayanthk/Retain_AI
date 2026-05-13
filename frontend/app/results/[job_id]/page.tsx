@@ -874,7 +874,12 @@ export default function ResultsPage() {
         if (event.type === "complete") { setConnectionStatus("complete"); sse.close(); sseRef.current = null; }
       } catch (err) { console.error("SSE parse error:", err); }
     };
-    sse.onerror = () => { sse.close(); sseRef.current = null; setConnectionStatus("error"); };
+    // Don't close on error — EventSource auto-reconnects; only mark error after repeated failures
+    let errorCount = 0;
+    sse.onerror = () => {
+      errorCount++;
+      if (errorCount >= 5) { sse.close(); sseRef.current = null; setConnectionStatus("error"); }
+    };
     return () => { sse.close(); sseRef.current = null; };
   }, [jobId]);
 
