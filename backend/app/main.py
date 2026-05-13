@@ -16,6 +16,7 @@ import tempfile
 load_dotenv()
 
 from app.graph.builder import build_retention_graph
+from app.shared import active_streams
 from typing import Dict, Any
 
 UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "retain_ai_uploads")
@@ -43,8 +44,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-active_streams: Dict[str, asyncio.Queue] = {}
 
 # Create an Inngest client
 inngest_client = inngest.Inngest(
@@ -80,10 +79,15 @@ async def analyze_retention_job(*args, **kwargs):
 
     # Define an async runner for the graph to stream updates internally
     async def execute_and_stream():
-        queue = active_streams.get(job_id) if job_id else None
+        stream = active_streams.get(job_id) if job_id else None
+        queue = stream["queue"] if stream else None
         final_state = None
-        
-        async for state in graph.astream(initial_state, stream_mode="values"):
+
+        async for state in graph.astream(
+            initial_state,
+            config={"configurable": {"job_id": job_id}},
+            stream_mode="values",
+        ):
             final_state = state
             if not queue:
                 continue
@@ -121,6 +125,15 @@ async def analyze_retention_job(*args, **kwargs):
                         "confidence": round(risk.get("concordance_index", 0) * 100) if has_model else 0,
                         "insight": insight,
                         "has_model": has_model,
+                        "feature_store": {
+                            "ltv_estimates": fs.get("ltv_estimates", {}),
+                            "velocity_metrics": fs.get("velocity_metrics", {}),
+                            "engagement_cohorts": fs.get("engagement_cohorts", {}),
+                            "rfm_scores": fs.get("rfm_scores", {}),
+                        },
+                        "data_quality_score": fs.get("data_quality_score", 0),
+                        "data_quality_logs": fs.get("data_quality_logs", []),
+                        "input_context": state.get("input_context", {}),
                     }
                 })
 
@@ -141,11 +154,47 @@ async def analyze_retention_job(*args, **kwargs):
 
             elif node == "diagnosis_merge":
                 diagnosis = state.get("diagnosis_results", {})
+                pattern_findings = state.get("pattern_findings", {})
+                q = state.get("questionnaire", {})
                 await queue.put({
                     "type": "diagnosis_ready",
                     "message": "Core problems diagnosed.",
                     "data": {
                         "merged_hypotheses": diagnosis.get("merged_hypotheses", []),
+                        "forensic_findings": diagnosis.get("forensic_findings", []),
+                        "pattern_findings": diagnosis.get("pattern_findings", []),
+                        "skeptic_findings": diagnosis.get("skeptic_findings", []),
+                        "user_segments": (
+                            pattern_findings.get("user_segments", [])
+                            if isinstance(pattern_findings, dict) else []
+                        ),
+                        "total_patterns_identified": diagnosis.get("total_patterns_identified", 0),
+                        "competitors": q.get("competitors", []),
+                        "churn_destination": q.get("churn_destination", ""),
+                    }
+                })
+
+            elif node == "simulation":
+                simulations = state.get("simulations", {})
+                ci = simulations.get("confidence_interval_5_95", [])
+                await queue.put({
+                    "type": "simulation_ready",
+                    "message": "Monte Carlo simulation complete.",
+                    "data": {
+                        "expected_lift": simulations.get("expected_lift", 0),
+                        "confidence_low": ci[0] if len(ci) > 0 else 0,
+                        "confidence_high": ci[1] if len(ci) > 1 else 0,
+                        "expected_roi": simulations.get("expected_roi", 0),
+                        "iterations": simulations.get("iterations", 0),
+                        "interventions": [
+                            {
+                                "name": imp.get("intervention", ""),
+                                "p10": imp.get("percentile_10", 0),
+                                "mean": imp.get("mean_lift", 0),
+                                "p90": imp.get("percentile_90", 0),
+                            }
+                            for imp in simulations.get("intervention_impacts", [])
+                        ],
                     }
                 })
 
@@ -204,7 +253,11 @@ async def run_analysis(
 ):
     try:
         job_id = str(uuid.uuid4())
-        active_streams[job_id] = asyncio.Queue()
+        active_streams[job_id] = {
+            "queue": asyncio.Queue(),
+            "hitl_event": asyncio.Event(),
+            "hitl_answers": {},
+        }
         req_body["job_id"] = job_id
         
         # Send event to Inngest to trigger the background job
@@ -222,8 +275,8 @@ async def run_analysis(
 async def stream_job(job_id: str, request: Request):
     if job_id not in active_streams:
         raise HTTPException(status_code=404, detail="Job not found or already completed")
-        
-    queue = active_streams[job_id]
+
+    queue = active_streams[job_id]["queue"]
 
     async def event_generator():
         try:
@@ -243,5 +296,15 @@ async def stream_job(job_id: str, request: Request):
             active_streams.pop(job_id, None)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.post("/analyze/{job_id}/respond")
+async def submit_hitl_response(job_id: str, body: Dict[str, Any] = Body(...)):
+    stream = active_streams.get(job_id)
+    if not stream:
+        raise HTTPException(status_code=404, detail="Job not found or already completed")
+    stream["hitl_answers"] = body.get("answers", {})
+    stream["hitl_event"].set()
+    return {"status": "ok"}
+
 
 inngest.fast_api.serve(app, inngest_client, [analyze_retention_job])

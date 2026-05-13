@@ -8,14 +8,13 @@ Adds:    critic_verdict, iteration_count, criticism, feedback
 
 from __future__ import annotations
 
-import os
 import json
 from pydantic import BaseModel, Field
 from typing import List, Literal
 
 from app.graph.state import RetentionGraphState
 from app.graph.utils import safe_llm_invoke
-from langchain_groq import ChatGroq
+from app.config import get_llm
 from langchain_core.prompts import ChatPromptTemplate
 
 class CriticEvaluation(BaseModel):
@@ -38,16 +37,21 @@ def strategy_critic_node(state: RetentionGraphState) -> dict:
         constrained_brief = state.get("constrained_brief", {})
         human_feedback = state.get("human_clarification", {}).get("responses", {})
         verified_causes = state.get("verified_root_causes", [])
+        q = state.get("questionnaire", {})
 
-        # Use Groq LLM for real evaluation
-        llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
-            groq_api_key=os.getenv("GROQ_API_KEY_2"),
-            temperature=0.1,
-        )
+        llm = get_llm("gemini", temperature=0.1)
 
         prompt = ChatPromptTemplate.from_template(
             """You are a senior strategy partner reviewing a retention strategy proposal.
+
+## User Constraints
+- Goal: {goal}
+- Timeline: {timeline}
+- Can ship product changes: {can_ship}
+- Support model: {support_model}
+- Pricing flexibility: {pricing_flex}
+- Already tried: {already_tried}
+- Priority segment: {priority_segment}
 
 ## Proposed Strategies
 {strategies}
@@ -58,34 +62,37 @@ def strategy_critic_node(state: RetentionGraphState) -> dict:
 ## Simulation Results
 Projected Lift: {lift}%
 
-## Constraints
+## Computed Constraints
 {constraints}
 
-## Human Feedback
+## Human Feedback (HITL)
 {feedback}
 
-Evaluate this strategy critically. Consider:
-1. Does the strategy address the actual root causes?
-2. Is the projected lift realistic?
-3. Are there any constraint violations?
-4. What are the strengths and weaknesses?
+Evaluate critically. A strategy COUNTS AS A CONSTRAINT VIOLATION when:
+- can_ship is "No" and the strategy requires product/eng work
+- pricing_flex includes "None — pricing is locked" and strategy proposes discounts or plan changes
+- support_model is "Self-serve only" and strategy needs CSM / 1:1 outreach
+- strategy duplicates a tactic in already_tried
+- strategy ignores the priority_segment
 
-Return ONLY a valid JSON object:
-{{
-    "quality_score": 0.75,
-    "strengths": ["strength 1", "strength 2"],
-    "weaknesses": ["weakness 1"],
-    "critical_feedback": ["feedback 1"],
-    "recommendations": ["recommendation 1"],
-    "constraint_violations": 0,
-    "verdict": "approved|low_lift|violation",
-    "verdict_reason": "Why this verdict was chosen"
-}}"""
+Verdict rules:
+- "violation" if ANY of the above triggers
+- "low_lift" if lift < 8% or quality_score < 0.55
+- "approved" otherwise
+
+quality_score in [0, 1]. constraint_violations is an integer count."""
         )
 
         evaluation = safe_llm_invoke(
             llm, CriticEvaluation,
             prompt.format(
+                goal=q.get("goal", "Reduce churn"),
+                timeline=q.get("timeline", "Unspecified"),
+                can_ship=q.get("can_ship_changes", "Unknown"),
+                support_model=q.get("support_model", "Unknown"),
+                pricing_flex=", ".join(q.get("pricing_flexibility", [])) or "Unspecified",
+                already_tried=", ".join(q.get("retention_tactics", [])) or "None",
+                priority_segment=q.get("priority_segment", "all users"),
                 strategies=json.dumps(merged_strategies, indent=2)[:2000],
                 causes=json.dumps(verified_causes, indent=2)[:1000],
                 lift=lift_percent,

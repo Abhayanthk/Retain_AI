@@ -7,13 +7,14 @@ Called by: strategy_pod_node
 
 from __future__ import annotations
 
-import os
+import json
 from typing import Any, List, Dict
 from pydantic import BaseModel, Field
 from app.graph.utils import safe_llm_invoke
-from langchain_groq import ChatGroq
+from app.config import get_llm
 from langchain_core.prompts import ChatPromptTemplate
 from app.graph.state import RetentionGraphState
+
 
 class ProposedInterventionUE(BaseModel):
     intervention: str
@@ -50,67 +51,57 @@ class UnitEconomistResult(BaseModel):
     cost_estimates: Dict[str, CostEstimate]
     top_roi_intervention: TopROIIntervention
 
+
 def run_unit_economist(state: RetentionGraphState) -> dict[str, Any]:
     """Generate strategies optimised for unit economics using Groq."""
     try:
         verified_causes = state.get("verified_root_causes", [])
         constrained_brief = state.get("constrained_brief", {})
         feature_store = state.get("feature_store", {})
-        ltv_proxy = feature_store.get("ltv_estimates", {}).get("ltv_proxy", 1000)
+        mean_ltv = feature_store.get("ltv_estimates", {}).get("mean_ltv", 1000)
+        q = state.get("questionnaire", {})
+        hitl_answers = state.get("human_clarification", {}).get("responses", {})
 
-        llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
-            groq_api_key=os.getenv("GROQ_API_KEY_1"),
-            temperature=0.3,
-        )
+        llm = get_llm("groq", temperature=0.3)
 
         prompt = ChatPromptTemplate.from_template(
-            """As a Unit Economist, analyze these churn causes and propose ROI-positive interventions for a B2B SaaS company.
-            
-            Verified Causes: {causes}
-            Current LTV Proxy: ${ltv}
-            Constraints: {constraints}
-            
-            Focus on:
-            1. Estimating implementation cost (low/medium/high).
-            2. Calculating Year-1 ROI based on realistic retention lift.
-            3. Payback period in months.
-            
-            Return ONLY a valid JSON object. No other text. Use this structure:
-            {{
-                "proposed_interventions": [
-                    {{"intervention": "step name", "confidence": 0.85, "estimated_cost": "low", "cost_usd": 5000, "expected_roi": 120.5, "rationale": "..."}}
-                ],
-                "roi_projections": {{
-                    "cause_name": {{
-                        "year_1_revenue_impact": 50000,
-                        "implementation_cost": 5000,
-                        "roi_percent": 120.5,
-                        "payback_months": 2.5
-                    }}
-                }},
-                "cac_ltv_impact": {{
-                    "cause_name": {{
-                        "current_ltv": 1000,
-                        "projected_ltv": 1200,
-                        "ltv_improvement_pct": 20.0
-                    }}
-                }},
-                "cost_estimates": {{
-                    "cause_name": {{
-                        "implementation": 5000,
-                        "ongoing_monthly": 400,
-                        "time_to_value_weeks": 4
-                    }}
-                }},
-                "top_roi_intervention": {{"intervention": "...", "expected_roi": 150.0}}
-            }}"""
+            """You are a Unit Economist. Propose ROI-positive interventions for a {business_model} company facing the churn causes below.
+
+Business context:
+- Goal: {top_goal}
+- Timeline: {timeline}
+- Stage: {stage}
+- Support model: {support_model}
+- Can ship product changes: {can_ship}
+- Already tried: {already_tried}
+- Human clarifications: {hitl_answers}
+
+Instructions:
+- If timeline is "Quick wins (30 days)", limit to interventions with payback_months <= 1.
+- If top_goal is "Increase LTV / expansion", weight expansion-revenue interventions higher.
+- If can_ship is "No", exclude any intervention requiring product builds or UI redesigns.
+- Do NOT propose tactics already tried.
+
+Verified Causes: {causes}
+Mean LTV: ${ltv}
+Constraints: {constraints}"""
         )
 
-        import json
         response = safe_llm_invoke(
             llm, UnitEconomistResult,
-            prompt.format(causes=json.dumps(verified_causes), ltv=ltv_proxy, constraints=json.dumps(constrained_brief)),
+            prompt.format(
+                business_model=q.get("business_model", "B2B SaaS"),
+                top_goal=q.get("goal", "Reduce churn rate"),
+                timeline=q.get("timeline", ""),
+                stage=q.get("company_stage", ""),
+                support_model=q.get("support_model", ""),
+                can_ship=q.get("can_ship_changes", ""),
+                already_tried=", ".join(q.get("retention_tactics", [])) or "None",
+                hitl_answers=json.dumps(hitl_answers) if hitl_answers else "None provided",
+                causes=json.dumps(verified_causes),
+                ltv=mean_ltv,
+                constraints=json.dumps(constrained_brief),
+            ),
             agent_name="UnitEconomist",
         )
 
@@ -135,6 +126,5 @@ def run_unit_economist(state: RetentionGraphState) -> dict[str, Any]:
 
 
 def _avg_confidence(interventions: list) -> float:
-    """Compute average confidence from LLM-returned interventions."""
     scores = [i.get("confidence", 0) for i in interventions if isinstance(i, dict)]
     return round(sum(scores) / len(scores), 3) if scores else 0.0

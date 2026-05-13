@@ -2,16 +2,15 @@
 Discovery Agent: Forensic Detective
 =====================================
 Investigates data anomalies and traces root causes.
-Called by: diagnosis_pod_node
+Called by: forensic_detective_node (parallel with pattern_matcher, fan-in at diagnosis_merge)
 """
 
 from __future__ import annotations
 
-import os
 from typing import Any, List, Dict
 from pydantic import BaseModel, Field
 from app.graph.utils import get_churn_column, safe_llm_invoke
-from langchain_google_genai import ChatGoogleGenerativeAI
+from app.config import get_llm
 from langchain_core.prompts import ChatPromptTemplate
 from app.graph.state import RetentionGraphState
 from app.rag.store import retrieve as rag_retrieve
@@ -61,6 +60,7 @@ def run_forensic_detective(state: RetentionGraphState) -> dict[str, Any]:
         import duckdb
 
         raw_csv_path = state.get("raw_csv_path", "")
+        q = state.get("questionnaire", {})
 
         # Load CSV for actual statistical analysis
         conn = duckdb.connect(":memory:")
@@ -100,43 +100,45 @@ def run_forensic_detective(state: RetentionGraphState) -> dict[str, Any]:
             for i, c in enumerate(retrieved)
         ) or "(no retrieved frameworks — reason from stats alone)"
 
-        # Use Gemini to generate forensic insights
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-3-flash-preview",
-            google_api_key=os.getenv("GOOGLE_API_KEY_1"),
-            temperature=0.3,
-        )
+        llm = get_llm("gemini", temperature=0.3)
 
         prompt = ChatPromptTemplate.from_template(
-            """You are a B2B SaaS retention analyst. Diagnose the 3 most likely root causes of churn.
+            """You are a retention analyst for a {business_model} company. Diagnose the 3 most likely root causes of churn.
 
-            ── Dataset statistics ──
-            Overall Churn Rate: {churn_rate}
-            Churn by Acquisition Channel: {churn_by_channel}
-            Churn by Integration Status: {churn_by_integration}
-            Detected Signals: {signals}
+── Business context ──
+Goal: {goal}
+Priority segment: {priority_segment}
+Named competitors: {competitors}
+Churn destination: {churn_destination}
 
-            ── Retrieved retention frameworks (use these to ground your analysis) ──
-            {evidence_block}
+── Dataset statistics ──
+Overall Churn Rate: {churn_rate}
+Churn by Acquisition Channel: {churn_by_channel}
+Churn by Integration Status: {churn_by_integration}
+Detected Signals: {signals}
 
-            Requirements:
-            - Each root cause must be specific and grounded in one or more retrieved frameworks above.
-            - Reference the framework by its source id in the `citations` map.
-            - Confidence in [0.7, 1.0].
+── Retrieved retention frameworks (ground your analysis in these) ──
+{evidence_block}
 
-            Return JSON:
-            {{
-              "suspected_causes": ["cause1", "cause2", "cause3"],
-              "confidence_scores": {{"cause1": 0.85, ...}},
-              "citations": {{"cause1": ["reforge_aha_001"], ...}}
-            }}
-            """
+Requirements:
+- Each root cause must be specific and grounded in one or more retrieved frameworks above.
+- If churn_destination names a competitor, weight a "losing to {{competitor}}" hypothesis accordingly.
+- Bias causes toward the priority segment when its tenure window matches the data signal.
+- Reference the framework by its source id in the `citations` map.
+- Confidence in [0.7, 1.0]."""
         )
 
         import json
+        competitors_val = q.get("competitors", [])
+        competitors_str = ", ".join(competitors_val) if isinstance(competitors_val, list) else str(competitors_val or "")
         response = safe_llm_invoke(
             llm, DetectiveResult,
             prompt.format(
+                business_model=q.get("business_model", "SaaS"),
+                goal=q.get("goal", "Reduce churn"),
+                priority_segment=q.get("priority_segment", "all users"),
+                competitors=competitors_str or "None named",
+                churn_destination=q.get("churn_destination", "Unknown"),
                 churn_rate=f"{stats['churn_rate']:.1%}",
                 churn_by_channel=json.dumps(stats['churn_by_channel']),
                 churn_by_integration=json.dumps(stats['churn_by_integration']),

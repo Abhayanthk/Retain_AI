@@ -7,12 +7,12 @@ Called by: strategy_pod_node
 
 from __future__ import annotations
 
-import os
-from typing import Any, List, Literal
+import json
+from typing import Any, List
 from pydantic import BaseModel, Field
 from app.graph.state import RetentionGraphState
 from app.graph.utils import safe_llm_invoke
-from langchain_groq import ChatGroq
+from app.config import get_llm
 from langchain_core.prompts import ChatPromptTemplate
 
 
@@ -32,7 +32,7 @@ class ProposedIntervention(BaseModel):
     job_focus: str
     expected_impact: float
     implementation_effort: str
-    confidence: float = Field(default=0.8) # Provide default since it's used in confidence calculation
+    confidence: float = Field(default=0.8)
 
 class JobPriority(BaseModel):
     job_type: str
@@ -45,52 +45,50 @@ class JTBDResult(BaseModel):
     proposed_interventions: List[ProposedIntervention]
     job_priority_ranking: List[JobPriority]
 
+
 def run_jtbd_specialist(state: RetentionGraphState) -> dict[str, Any]:
     """Generate strategies using the JTBD framework via Groq."""
     try:
         verified_causes = state.get("verified_root_causes", [])
         constrained_brief = state.get("constrained_brief", {})
+        q = state.get("questionnaire", {})
+        hitl_answers = state.get("human_clarification", {}).get("responses", {})
 
-        llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
-            groq_api_key=os.getenv("GROQ_API_KEY_1"),
-            temperature=0.5,
-        )
+        llm = get_llm("groq", temperature=0.5)
 
         prompt = ChatPromptTemplate.from_template(
-            """As a JTBD (Jobs-To-Be-Done) specialist, analyze these churn causes and map them to unmet user jobs.
+            """You are a JTBD specialist. Map churn causes to unmet user jobs for a {business_model} company.
 
-            Verified Causes: {causes}
-            Constraints: {constraints}
+Business context:
+- Priority segment: {priority_segment}
+- Typical customer profile: {typical_customer}
+- Industry: {industry}
+- Stage: {stage}
+- Human clarifications: {hitl_answers}
 
-            For each cause, identify:
-            1. Functional job (what does the user need to accomplish?)
-            2. Emotional job (how should they feel?)
-            3. Social job (how should they be perceived?)
+Instructions:
+- Focus identified_jobs on the priority segment.
+- If priority_segment contains "Newest customers" or "first 90 days", weight functional onboarding jobs highest.
+- If priority_segment is "High-value / enterprise", focus on social and strategic jobs.
 
-            Then propose interventions that address the most critical jobs.
+For each cause, identify the functional, emotional, and social jobs. Then propose interventions addressing the highest-gap jobs.
 
-            Return ONLY a valid JSON object. No other text. Use this structure:
-            {{
-                "identified_jobs": [
-                    {{"job_type": "functional|emotional|social", "description": "...", "related_cause": "..."}}
-                ],
-                "satisfaction_gaps": [
-                    {{"job": "...", "current_satisfaction": 0.4, "target_satisfaction": 0.85, "gap": 0.45}}
-                ],
-                "proposed_interventions": [
-                    {{"intervention": "...", "job_focus": "functional|emotional|social", "expected_impact": 0.15, "implementation_effort": "low|medium|high"}}
-                ],
-                "job_priority_ranking": [
-                    {{"job_type": "...", "description": "...", "priority": 1}}
-                ]
-            }}"""
+Verified Causes: {causes}
+Constraints: {constraints}"""
         )
 
-        import json
         response = safe_llm_invoke(
             llm, JTBDResult,
-            prompt.format(causes=json.dumps(verified_causes), constraints=json.dumps(constrained_brief)),
+            prompt.format(
+                business_model=q.get("business_model", "B2B SaaS"),
+                priority_segment=q.get("priority_segment", ""),
+                typical_customer=q.get("typical_customer", ""),
+                industry=q.get("business_context", q.get("industry", "")),
+                stage=q.get("company_stage", ""),
+                hitl_answers=json.dumps(hitl_answers) if hitl_answers else "None provided",
+                causes=json.dumps(verified_causes),
+                constraints=json.dumps(constrained_brief),
+            ),
             agent_name="JTBDSpecialist",
         )
 
@@ -114,6 +112,5 @@ def run_jtbd_specialist(state: RetentionGraphState) -> dict[str, Any]:
 
 
 def _avg_confidence(items: list) -> float:
-    """Compute average confidence from LLM-returned items."""
     scores = [i.get("confidence", 0) for i in items if isinstance(i, dict)]
     return round(sum(scores) / len(scores), 3) if scores else 0.0

@@ -2,17 +2,16 @@
 Discovery Agent: Pattern Matcher
 ==================================
 Identifies recurring patterns and user segments using Gemini.
-Called by: diagnosis_pod_node
+Called by: pattern_matcher_node (parallel with forensic_detective, fan-in at diagnosis_merge)
 """
 
 from __future__ import annotations
 
-import os
 from typing import Any, List
 from pydantic import BaseModel, Field
 from app.graph.utils import safe_llm_invoke
+from app.config import get_llm
 from app.graph.state import RetentionGraphState
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 
 
@@ -48,46 +47,37 @@ def run_pattern_matcher(state: RetentionGraphState) -> dict[str, Any]:
     try:
         feature_store = state.get("feature_store", {})
         behavior_cohorts = state.get("behavior_cohorts", [])
+        q = state.get("questionnaire", {})
 
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-3-flash-preview",
-            google_api_key=os.getenv("GOOGLE_API_KEY_2"),
-            temperature=0.2,
-        )
+        llm = get_llm("gemini", temperature=0.2)
 
         prompt = ChatPromptTemplate.from_template(
-            """Analyze these user behavior cohorts and features to identify recurring churn patterns and segments.
-            
-            Behavior Cohorts: {cohorts}
-            Feature Store Data: {features}
-            
-            Identify:
-            1. High-risk user segments.
-            2. Feature-based patterns (e.g., specific feature adoption gaps).
-            3. Common "churn sequences" (steps users take before leaving).
-            
-            Return ONLY a valid JSON object. No other text. Use this structure:
-            {{
-                "patterns_found": [
-                    {{"pattern": "pattern_name", "churn_risk": "high/med/low", "affected_users": 100, "description": "..."}}
-                ],
-                "user_segments": [
-                    {{"segment_id": "...", "size": 100, "retention_rate": 0.8, "characteristics": "..."}}
-                ],
-                "topic_clusters": [
-                    {{"topic": "...", "cluster_size": 10}}
-                ],
-                "churn_sequences": [
-                    {{"sequence": "step1 -> step2 -> churn", "probability": 0.85}}
-                ],
-                "pattern_confidence": 0.85
-            }}"""
+            """Analyze these user behavior cohorts and features to identify recurring churn patterns and segments for a {business_model} company.
+
+Business context:
+- Priority segment: {priority_segment}
+- Typical customer: {typical_customer}
+
+Behavior Cohorts: {cohorts}
+Feature Store Data: {features}
+
+Identify:
+1. High-risk user segments — bias toward the priority segment if signals match.
+2. Feature-based patterns (specific feature adoption gaps).
+3. Common churn sequences (steps users take before leaving).
+4. pattern_confidence in [0, 1]."""
         )
 
         import json
         response = safe_llm_invoke(
             llm, PatternMatcherResult,
-            prompt.format(cohorts=json.dumps(behavior_cohorts), features=json.dumps(feature_store)),
+            prompt.format(
+                business_model=q.get("business_model", "SaaS"),
+                priority_segment=q.get("priority_segment", "all users"),
+                typical_customer=q.get("typical_customer", "Unspecified"),
+                cohorts=json.dumps(behavior_cohorts),
+                features=json.dumps(feature_store),
+            ),
             agent_name="PatternMatcher",
         )
 

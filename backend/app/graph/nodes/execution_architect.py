@@ -8,16 +8,15 @@ Adds:    final_playbook
 
 from __future__ import annotations
 
-import os
 import json
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Union
 from datetime import datetime
 
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from app.graph.state import RetentionGraphState
 from app.graph.utils import safe_llm_invoke
+from app.config import get_llm
 
 class ExecutiveSummary(BaseModel):
     total_problems_identified: int
@@ -115,21 +114,18 @@ def execution_architect_node(state: RetentionGraphState) -> dict:
         merged_strategies = state.get("strategy_outputs", {}).get("merged_strategies", [])
         lift_percent = state.get("lift_percent", 0)
         input_context = state.get("input_context", {})
+        questionnaire = state.get("questionnaire", {})
         constrained_brief = state.get("constrained_brief", {})
         simulations = state.get("simulations", {})
         criticism = state.get("criticism", {})
+        hitl_answers = state.get("human_clarification", {}).get("responses", {})
 
         # Strategy agent outputs
         economist_output = state.get("unit_economist_output", {})
         jtbd_output = state.get("jtbd_specialist_output", {})
         growth_output = state.get("growth_hacker_output", {})
 
-        # ── Initialize Groq LLM ─────────────────────────────────────────
-        llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
-            groq_api_key=os.getenv("GROQ_API_KEY_3"),
-            temperature=0.3,
-        )
+        llm = get_llm("gemini", temperature=0.3)
 
         prompt = ChatPromptTemplate.from_template(
             """You are a senior retention strategist creating a final execution playbook for a real company.
@@ -140,6 +136,16 @@ Business Model: {business_model}
 Company Stage: {company_stage}
 Target Churn Rate: {target_churn}
 Goal: {goal}
+
+## Operational Constraints (must respect — these are hard limits)
+Priority segment: {priority_segment}
+Timeline: {timeline}
+Can ship product changes: {can_ship}
+Support model: {support_model}
+Pricing flexibility: {pricing_flex}
+Named competitors: {competitors}
+Churn destination: {churn_dest}
+Already tried (do NOT re-propose): {already_tried}
 
 ## Verified Root Causes (from data analysis)
 {root_causes}
@@ -162,130 +168,69 @@ Simulations: {simulations}
 ## Critic Feedback
 {criticism}
 
+## Human Clarifications (HITL answers)
+{hitl_answers}
+
 ---
 
 Based on ALL of the above real data, create a detailed execution playbook.
 
 CRITICAL RULES:
-- Each problem MUST address a DIFFERENT root cause. Do NOT create two problems about the same underlying issue (e.g., "poor onboarding" and "lack of guidance" are the SAME problem — pick one).
+- Each problem MUST address a DIFFERENT root cause. Do NOT create two problems about the same underlying issue.
 - If multiple root causes overlap, MERGE them into a single problem with a combined solution.
 - Prioritize problems by impact: the problem causing the most churn goes first.
-- Solutions must be SPECIFIC to this company's data, not generic advice like "simplify the UI" or "provide tutorials."
+- Solutions must be SPECIFIC to this company's data, not generic advice.
 - Reference actual numbers from the data (churn rates, user counts, revenue impact).
 
-For EACH problem identified, structure it as:
+CONSTRAINT ENFORCEMENT (violating these makes the playbook unusable):
+- If "Can ship product changes" is "No", every action must be doable without engineering (email, campaigns, content, ops, manual outreach only).
+- If pricing_flex includes "None — pricing is locked", do not propose discounts, plan changes, or pricing experiments.
+- If support_model is "Self-serve only", do not propose CSM motions or 1:1 outreach as a required step.
+- If timeline is "Quick wins (30 days)", phase_2 and phase_3 should be lighter; phase_1 carries the bulk of expected_lift.
+- NEVER re-propose anything from the Already Tried list.
+- Weight the priority_segment in problem.affected_segment for at least the priority-1 problem.
 
-1. **Problem**: What specific problem was discovered (reference the actual root cause)
-2. **Solution**: How exactly to solve it (reference the actual strategy proposed)
-3. **Retention Impact**: How much retention improvement this specific solution can drive (use real numbers from the simulation/lift data)
-4. **Effort & Steps**: Step-by-step implementation plan with effort estimates
+For EACH problem identified:
+1. Problem — what specific problem (reference the actual root cause).
+2. Solution — how to solve it (reference the actual strategy proposed).
+3. Retention Impact — use real numbers from simulation/lift data.
+4. Implementation steps — step-by-step plan with effort/owner/timeline/deliverable/dependencies.
 
-Return ONLY a valid JSON object with this exact structure:
-{{
-    "title": "Retention Optimization Playbook",
-    "executive_summary": {{
-        "total_problems_identified": 3,
-        "total_projected_retention_lift": "{lift}%",
-        "estimated_timeline": "90 days",
-        "estimated_budget": "$XX,XXX",
-        "confidence_level": "High/Medium/Low"
-    }},
-    "problems_and_solutions": [
-        {{
-            "priority": 1,
-            "problem": {{
-                "title": "Short problem title",
-                "description": "Detailed description of the problem based on actual data",
-                "affected_segment": "Which customer segment is affected",
-                "current_impact": "How much churn this problem causes (use real data)"
-            }},
-            "solution": {{
-                "title": "Short solution title",
-                "description": "Detailed explanation of how to solve this",
-                "framework_used": "Which strategy framework (Unit Economics / JTBD / Growth)",
-                "key_actions": ["Action 1", "Action 2", "Action 3"]
-            }},
-            "retention_impact": {{
-                "estimated_lift_percent": 5.0,
-                "estimated_users_retained": 50,
-                "estimated_revenue_impact": "$50,000",
-                "confidence": 0.85,
-                "time_to_impact": "30 days"
-            }},
-            "implementation_steps": [
-                {{
-                    "step": 1,
-                    "action": "What to do",
-                    "owner": "Team/Role responsible",
-                    "effort": "low/medium/high",
-                    "timeline": "Week 1-2",
-                    "deliverable": "What gets produced",
-                    "dependencies": ["Any blockers"]
-                }}
-            ]
-        }}
-    ],
-    "30_60_90_roadmap": {{
-        "phase_1_30_days": {{
-            "theme": "Foundation & Quick Wins",
-            "goals": ["Goal 1", "Goal 2"],
-            "key_milestones": ["Milestone 1", "Milestone 2"],
-            "expected_lift": "X%"
-        }},
-        "phase_2_60_days": {{
-            "theme": "Scale & Optimize",
-            "goals": ["Goal 1", "Goal 2"],
-            "key_milestones": ["Milestone 1", "Milestone 2"],
-            "expected_lift": "X%"
-        }},
-        "phase_3_90_days": {{
-            "theme": "Measure & Iterate",
-            "goals": ["Goal 1", "Goal 2"],
-            "key_milestones": ["Milestone 1", "Milestone 2"],
-            "expected_lift": "X%"
-        }}
-    }},
-    "success_metrics": [
-        {{
-            "metric": "Metric name",
-            "current_value": "X%",
-            "target_value": "Y%",
-            "measurement_method": "How to measure",
-            "review_frequency": "Weekly/Monthly"
-        }}
-    ],
-    "risks_and_mitigations": [
-        {{
-            "risk": "What could go wrong",
-            "probability": "low/medium/high",
-            "mitigation": "How to prevent it",
-            "contingency": "What to do if it happens"
-        }}
-    ],
-    "resource_requirements": {{
-        "team": ["Role 1", "Role 2"],
-        "technology": ["Tool 1", "Tool 2"],
-        "budget_breakdown": {{
-            "people": "$X",
-            "technology": "$X",
-            "marketing": "$X",
-            "total": "$X"
-        }}
-    }}
-}}"""
+Field guidance:
+- estimated_timeline: "30/60/90 days" style. estimated_budget: dollar range string.
+- confidence_level: "High" / "Medium" / "Low".
+- problems_and_solutions: 2–4 distinct problems (priority 1..N).
+- solution.framework_used: "Unit Economics" / "JTBD" / "Growth Hacking" / mix.
+- retention_impact.confidence in [0, 1]. estimated_lift_percent is numeric (e.g. 5.0, not "5%").
+- implementation_steps.effort: "low" / "medium" / "high". timeline: "Week 1–2" style.
+- 30_60_90_roadmap: three phases (phase_1_30_days, phase_2_60_days, phase_3_90_days), each with theme, goals (list), key_milestones (list), expected_lift (string with % sign).
+- success_metrics: include measurement_method + review_frequency.
+- risks_and_mitigations.probability: "low" / "medium" / "high".
+- resource_requirements.budget_breakdown: people / technology / marketing / total (all dollar strings).
+- Use total_projected_retention_lift = "{lift}%"."""
         )
 
         root_causes_str = json.dumps(verified_root_causes, indent=2)
         strategies_str = json.dumps(merged_strategies, indent=2)
 
+        competitors_val = questionnaire.get("competitors", [])
+        competitors_str = ", ".join(competitors_val) if isinstance(competitors_val, list) else str(competitors_val or "None named")
         response = safe_llm_invoke(
             llm, Playbook,
             prompt.format(
-                industry=input_context.get("industry", "Unknown"),
-                business_model=input_context.get("business_model", "Unknown"),
-                company_stage=input_context.get("company_stage", "Unknown"),
-                target_churn=input_context.get("target_churn_rate", "Unknown"),
-                goal=input_context.get("goal", "Reduce churn"),
+                industry=questionnaire.get("business_context", input_context.get("industry", "Unknown")),
+                business_model=questionnaire.get("business_model", "Unknown"),
+                company_stage=questionnaire.get("company_stage", "Unknown"),
+                target_churn=questionnaire.get("target_churn_rate", "Unknown") or "Unknown",
+                goal=questionnaire.get("goal", "Reduce churn"),
+                priority_segment=questionnaire.get("priority_segment", "all users"),
+                timeline=questionnaire.get("timeline", "Unspecified"),
+                can_ship=questionnaire.get("can_ship_changes", "Unknown"),
+                support_model=questionnaire.get("support_model", "Unknown"),
+                pricing_flex=", ".join(questionnaire.get("pricing_flexibility", [])) or "Unspecified",
+                competitors=competitors_str or "None named",
+                churn_dest=questionnaire.get("churn_destination", "Unknown"),
+                already_tried=", ".join(questionnaire.get("retention_tactics", [])) or "None",
                 root_causes=root_causes_str,
                 economist=json.dumps(economist_output, indent=2)[:1500],
                 jtbd=json.dumps(jtbd_output, indent=2)[:1500],
@@ -295,6 +240,7 @@ Return ONLY a valid JSON object with this exact structure:
                 simulations=json.dumps(simulations, indent=2)[:1000] if simulations else "No simulation data",
                 constraints=json.dumps(constrained_brief, indent=2)[:1000] if constrained_brief else "No constraints",
                 criticism=json.dumps(criticism, indent=2)[:500] if criticism else "No critic feedback",
+                hitl_answers=json.dumps(hitl_answers)[:500] if hitl_answers else "None provided",
             ),
             agent_name="ExecutionArchitect",
         )

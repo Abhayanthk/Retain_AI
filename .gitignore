@@ -18,3 +18,9 @@ Temporary\ Items
 .env
 .env.local
 .env.*.local
+
+# AI/Claude specific
+CLAUDE.md
+
+# Personal learning notes
+learn/

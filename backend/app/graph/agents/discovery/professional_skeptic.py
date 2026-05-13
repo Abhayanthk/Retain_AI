@@ -3,18 +3,17 @@ Discovery Agent: Professional Skeptic
 =======================================
 Challenges assumptions and stress-tests hypotheses using LLM-powered
 adversarial reasoning.
-Called by: diagnosis_pod_node
+Called by: diagnosis_merge_node (after forensic_detective + pattern_matcher fan-in)
 """
 
 from __future__ import annotations
 
-import os
 import json
 from typing import Any, List, Dict
 from pydantic import BaseModel, Field
 from app.graph.state import RetentionGraphState
 from app.graph.utils import safe_llm_invoke
-from langchain_google_genai import ChatGoogleGenerativeAI
+from app.config import get_llm
 from langchain_core.prompts import ChatPromptTemplate
 
 class CounterArgument(BaseModel):
@@ -54,49 +53,52 @@ def run_professional_skeptic(
     try:
         forensic_causes = forensic_findings.get("suspected_causes", [])
         forensic_confidence = forensic_findings.get("confidence_scores", {})
+        statistical_evidence = forensic_findings.get("statistical_evidence", {})
         pattern_sequences = pattern_findings.get("churn_sequences", [])
         pattern_found = pattern_findings.get("patterns_found", [])
+        q = state.get("questionnaire", {})
 
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-3-flash-preview",
-            google_api_key=os.getenv("GOOGLE_API_KEY_1"),
-            temperature=0.4,
-        )
+        llm = get_llm("gemini", temperature=0.4)
 
         skeptic_prompt = ChatPromptTemplate.from_template(
             """You are a Professional Skeptic reviewing churn analysis findings.
-Your job is to challenge assumptions, find flaws, and stress-test hypotheses.
+Your job is to challenge assumptions, find flaws, and stress-test hypotheses against the actual data.
+
+## Business context
+Priority segment: {priority_segment}
+Goal: {goal}
+Tactics already tried (so retread proposals are suspect): {already_tried}
 
 ## Forensic Findings
 Suspected causes: {causes}
 Confidence scores: {confidence}
 
+## Underlying data the forensic agent used (use this to cross-check)
+Statistical evidence: {evidence}
+
 ## Pattern Findings
 Churn sequences: {sequences}
 Patterns found: {patterns}
 
-For EACH suspected cause, provide:
-1. A specific counter-argument (not generic — reference the actual cause)
-2. A robustness score (0.0-1.0) based on how well-supported the hypothesis is
-3. One alternative explanation
+For EACH suspected cause:
+1. Specific counter-argument — reference the actual cause AND the statistical_evidence above.
+2. Robustness score (0.0-1.0) — penalize if the evidence is weak or the cause overlaps with already-tried tactics.
+3. One alternative explanation.
 
-Also flag any cognitive biases (confirmation bias, survivorship bias, overfitting).
-
-Return as JSON:
-{{
-  "counter_arguments": [{{"hypothesis": "...", "counter_argument": "...", "strength": "low|medium|high"}}],
-  "robustness_scores": {{"cause_name": 0.XX}},
-  "alternative_explanations": [{{"hypothesis": "...", "alternative": "...", "testability": "low|medium|high"}}],
-  "bias_flags": [{{"issue": "...", "risk": "low|medium|high", "recommendation": "..."}}],
-  "overall_quality": {{"forensic_quality": 0.XX, "pattern_quality": 0.XX, "combined_confidence": 0.XX, "recommendation": "..."}}
-}}"""
+Also flag cognitive biases (confirmation, survivorship, overfitting, channel-attribution bias).
+strength / testability / risk values: "low", "medium", or "high".
+robustness_scores keys: the suspected cause strings. All numeric scores in [0, 1]."""
         )
 
         response = safe_llm_invoke(
             llm, SkepticResult,
             skeptic_prompt.format(
+                priority_segment=q.get("priority_segment", "all users"),
+                goal=q.get("goal", "Reduce churn"),
+                already_tried=", ".join(q.get("retention_tactics", [])) or "None",
                 causes=json.dumps(forensic_causes),
                 confidence=json.dumps(forensic_confidence),
+                evidence=json.dumps(statistical_evidence)[:800],
                 sequences=json.dumps(pattern_sequences[:3]),
                 patterns=json.dumps([p.get("pattern", "") if isinstance(p, dict) else "" for p in pattern_found[:5]]),
             ),
