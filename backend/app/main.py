@@ -83,6 +83,11 @@ async def analyze_retention_job(*args, **kwargs):
         queue = stream["queue"] if stream else None
         final_state = None
 
+        loop = asyncio.get_event_loop()
+        print(f"[DEBUG/inngest_fn] pid={os.getpid()} loop={id(loop)} job_id={job_id} "
+              f"active_streams_id={id(active_streams)} keys={list(active_streams.keys())} "
+              f"queue_found={queue is not None} queue_id={id(queue) if queue else None}", flush=True)
+
         async for state in graph.astream(
             initial_state,
             config={"configurable": {"job_id": job_id}},
@@ -90,10 +95,13 @@ async def analyze_retention_job(*args, **kwargs):
         ):
             final_state = state
             if not queue:
+                print(f"[DEBUG/inngest_fn] node={state.get('current_node')} SKIPPED — no queue", flush=True)
                 continue
                 
             node = state.get("current_node")
             
+            print(f"[DEBUG/inngest_fn] node={node} queue_id={id(queue)} qsize_before_put={queue.qsize()}", flush=True)
+
             if node == "feature_engineering":
                 fs = state.get("feature_store", {})
                 risk = fs.get("predictive_churn_risk", {})
@@ -253,12 +261,16 @@ async def run_analysis(
 ):
     try:
         job_id = str(uuid.uuid4())
+        q = asyncio.Queue()
         active_streams[job_id] = {
-            "queue": asyncio.Queue(),
+            "queue": q,
             "hitl_event": asyncio.Event(),
             "hitl_answers": {},
         }
         req_body["job_id"] = job_id
+        loop = asyncio.get_event_loop()
+        print(f"[DEBUG/POST_analyze] pid={os.getpid()} loop={id(loop)} job_id={job_id} "
+              f"active_streams_id={id(active_streams)} queue_id={id(q)}", flush=True)
         
         # Send event to Inngest to trigger the background job
         await inngest_client.send(
@@ -277,6 +289,9 @@ async def stream_job(job_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Job not found or already completed")
 
     queue = active_streams[job_id]["queue"]
+    loop = asyncio.get_event_loop()
+    print(f"[DEBUG/SSE_GET] pid={os.getpid()} loop={id(loop)} job_id={job_id} "
+          f"active_streams_id={id(active_streams)} queue_id={id(queue)} qsize={queue.qsize()}", flush=True)
 
     async def event_generator():
         try:
@@ -290,6 +305,7 @@ async def stream_job(job_id: str, request: Request):
                     yield ": heartbeat\n\n"
                     continue
 
+                print(f"[DEBUG/SSE_yield] job_id={job_id} event={event.get('type')}", flush=True)
                 yield f"data: {json.dumps(event)}\n\n"
 
                 if event["type"] == "complete":
