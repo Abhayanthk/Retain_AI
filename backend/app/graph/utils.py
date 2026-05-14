@@ -37,6 +37,50 @@ def get_churn_column(df) -> str | None:
     return next((c for c in churn_candidates if 'is_churn' in c.lower() or c.lower() == 'churned'), None)
 
 
+def build_critic_feedback_block(state, label_singular: str = "intervention") -> str:
+    """Build prompt-ready critic feedback when this is a retry pass.
+
+    Returns "" on the first pass so prompts stay clean. On retry, embeds the
+    verdict reason, weaknesses, and recommendations from state.criticism so the
+    strategy agent can revise instead of regenerating from scratch.
+    """
+    import json as _json
+
+    iteration_count = state.get("iteration_count", 0) or 0
+    if iteration_count < 1:
+        return ""
+
+    criticism = state.get("criticism", {}) or {}
+    verdict = state.get("critic_verdict", "")
+    feedback = state.get("feedback", "") or ""
+    recs = criticism.get("recommendations", []) or []
+    weaknesses = criticism.get("weaknesses", []) or []
+    prior_strategies = (state.get("strategy_outputs", {}) or {}).get("merged_strategies", []) or []
+    prior_recs = [s.get("recommendation") for s in prior_strategies if isinstance(s, dict)]
+
+    if not (recs or weaknesses or feedback or prior_recs):
+        return ""
+
+    return (
+        "── PRIOR CRITIC FEEDBACK (this is retry pass {iter} — REVISE, do not repeat) ──\n"
+        "Critic verdict: {verdict}\n"
+        "Verdict reason: {reason}\n"
+        "Weaknesses to fix: {weak}\n"
+        "Required improvements: {recs}\n"
+        "Prior {label} that was rejected: {prior}\n"
+        "Your output must materially differ from the rejected {label} and explicitly "
+        "address each weakness above.\n"
+    ).format(
+        iter=iteration_count,
+        verdict=verdict or "unspecified",
+        reason=feedback or "(none)",
+        weak=_json.dumps(weaknesses)[:600],
+        recs=_json.dumps(recs)[:600],
+        prior=_json.dumps(prior_recs)[:400],
+        label=label_singular,
+    )
+
+
 def safe_llm_invoke(llm, schema, prompt_text: str, agent_name: str = "Unknown"):
     """Invoke LLM with structured output, falling back to raw JSON parsing.
     

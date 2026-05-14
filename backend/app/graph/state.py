@@ -60,7 +60,11 @@ class RetentionGraphState(TypedDict, total=False):
     forensic_detective_output: dict[str, Any]
     pattern_matcher_output: dict[str, Any]
     professional_skeptic_output: dict[str, Any]
+    competitor_research_output: dict[str, Any]
     diagnosis_results: dict[str, Any]
+
+    # ── Node 5c (extended): top-segment table for strategy agents
+    top_segments: list[dict[str, Any]]
 
     # ── Node 6: Hypothesis Validation ────────────────────────────────
     hypothesis_status: str  # "verified" | "weak_proof" | "unverified"
@@ -79,6 +83,9 @@ class RetentionGraphState(TypedDict, total=False):
     growth_hacker_output: dict[str, Any]
     strategy_outputs: dict[str, Any]
 
+    # ── Node 9e: Strategy Skeptic (adversarial pre-simulation review)
+    strategy_skeptic_output: dict[str, Any]
+
     # ── Node 10: Simulation ──────────────────────────────────────────
     simulations: dict[str, Any]
     lift_percent: float
@@ -88,6 +95,9 @@ class RetentionGraphState(TypedDict, total=False):
     iteration_count: int
     criticism: dict[str, Any]
     feedback: str
+
+    # ── Node 11b: Evidence Dossier (stat → cause → tactic → outcome → risk → mitigation)
+    evidence_dossier: list[dict[str, Any]]
 
     # ── Node 12: Execution Architect ─────────────────────────────────
     final_playbook: dict[str, Any]

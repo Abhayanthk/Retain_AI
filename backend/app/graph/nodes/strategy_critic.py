@@ -37,6 +37,7 @@ def strategy_critic_node(state: RetentionGraphState) -> dict:
         constrained_brief = state.get("constrained_brief", {})
         human_feedback = state.get("human_clarification", {}).get("responses", {})
         verified_causes = state.get("verified_root_causes", [])
+        skeptic_output = state.get("strategy_skeptic_output", {}) or {}
         q = state.get("questionnaire", {})
 
         llm = get_llm("gemini", temperature=0.1)
@@ -59,6 +60,12 @@ def strategy_critic_node(state: RetentionGraphState) -> dict:
 ## Verified Root Causes
 {causes}
 
+## Strategy Skeptic Review (read this FIRST — its weak_points are additional violation triggers)
+Headline critique: {skeptic_headline}
+Overall robustness (0..1): {skeptic_robustness}
+Weak points: {skeptic_weak}
+Assumption risks: {skeptic_assumptions}
+
 ## Simulation Results
 Projected Lift: {lift}%
 
@@ -74,14 +81,22 @@ Evaluate critically. A strategy COUNTS AS A CONSTRAINT VIOLATION when:
 - support_model is "Self-serve only" and strategy needs CSM / 1:1 outreach
 - strategy duplicates a tactic in already_tried
 - strategy ignores the priority_segment
+- skeptic flagged any high-severity weak_point (treat as a hard violation)
 
 Verdict rules:
 - "violation" if ANY of the above triggers
-- "low_lift" if lift < 8% or quality_score < 0.55
+- "low_lift" if lift < 8% or quality_score < 0.55 or skeptic_robustness < 0.5
 - "approved" otherwise
 
+In `weaknesses` field, MERGE your own findings with the skeptic's high/medium-severity weak_points
+(do not lose information — downstream nodes consume `criticism.weaknesses`).
 quality_score in [0, 1]. constraint_violations is an integer count."""
         )
+
+        skeptic_weak = skeptic_output.get("weak_points", []) or []
+        skeptic_assumptions = skeptic_output.get("assumption_risks", []) or []
+        skeptic_robustness = float(skeptic_output.get("overall_robustness", 0.0) or 0.0)
+        skeptic_headline = skeptic_output.get("headline_critique", "(none)")
 
         evaluation = safe_llm_invoke(
             llm, CriticEvaluation,
@@ -95,6 +110,10 @@ quality_score in [0, 1]. constraint_violations is an integer count."""
                 priority_segment=q.get("priority_segment", "all users"),
                 strategies=json.dumps(merged_strategies, indent=2)[:2000],
                 causes=json.dumps(verified_causes, indent=2)[:1000],
+                skeptic_headline=skeptic_headline,
+                skeptic_robustness=round(skeptic_robustness, 3),
+                skeptic_weak=json.dumps(skeptic_weak)[:1200],
+                skeptic_assumptions=json.dumps(skeptic_assumptions)[:800],
                 lift=lift_percent,
                 constraints=json.dumps(constrained_brief, indent=2)[:1000],
                 feedback=json.dumps(human_feedback)[:500] if human_feedback else "No human feedback",
@@ -105,25 +124,55 @@ quality_score in [0, 1]. constraint_violations is an integer count."""
         quality_score = evaluation.quality_score
         llm_verdict = evaluation.verdict
 
-        # Determine final verdict (combine LLM verdict with hard thresholds)
-        if llm_verdict == "approved" and quality_score >= 0.55 and lift_percent >= 8:
+        # Hard gate: skeptic high-severity weak_points are violations regardless of LLM verdict.
+        skeptic_high_severity = [
+            w for w in skeptic_weak
+            if isinstance(w, dict) and str(w.get("severity", "")).lower() == "high"
+        ]
+        total_violations = evaluation.constraint_violations + len(skeptic_high_severity)
+
+        # Determine final verdict (combine LLM verdict with hard thresholds + skeptic gate)
+        if total_violations > 0 or llm_verdict == "violation":
+            critic_verdict = "violation"
+            feedback = (
+                evaluation.verdict_reason
+                or f"Strategy has constraint violations (incl. {len(skeptic_high_severity)} skeptic flags)."
+            )
+        elif (
+            llm_verdict == "approved"
+            and quality_score >= 0.55
+            and lift_percent >= 8
+            and skeptic_robustness >= 0.5
+        ):
             critic_verdict = "approved"
             feedback = evaluation.verdict_reason or "Strategy approved."
-        elif evaluation.constraint_violations > 0 or llm_verdict == "violation":
-            critic_verdict = "violation"
-            feedback = evaluation.verdict_reason or "Strategy has constraint violations."
         else:
             critic_verdict = "low_lift"
-            feedback = evaluation.verdict_reason or f"Lift {lift_percent}% below threshold or quality insufficient."
+            feedback = (
+                evaluation.verdict_reason
+                or f"Lift {lift_percent}% below threshold, quality {quality_score}, "
+                f"skeptic robustness {round(skeptic_robustness, 2)}."
+            )
+
+        # Merge skeptic weak_points into criticism.weaknesses so retry agents see them via
+        # build_critic_feedback_block. Preserve LLM weaknesses too.
+        merged_weaknesses = list(evaluation.weaknesses or [])
+        for w in skeptic_weak:
+            if isinstance(w, dict):
+                merged_weaknesses.append(
+                    f"[skeptic:{w.get('severity', '?')}] {w.get('tactic', '')}: {w.get('weakness', '')}"
+                )
 
         criticism = {
             "quality_score": round(quality_score, 3),
             "lift_assessment": f"{lift_percent}% projected lift",
-            "constraint_violations": evaluation.constraint_violations,
+            "constraint_violations": total_violations,
             "critical_feedback": evaluation.critical_feedback,
             "strengths": evaluation.strengths,
-            "weaknesses": evaluation.weaknesses,
+            "weaknesses": merged_weaknesses,
             "recommendations": evaluation.recommendations,
+            "skeptic_high_severity_count": len(skeptic_high_severity),
+            "skeptic_robustness": round(skeptic_robustness, 3),
         }
 
         return {

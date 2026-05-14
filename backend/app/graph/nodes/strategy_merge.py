@@ -37,18 +37,16 @@ def strategy_merge_node(state: RetentionGraphState) -> dict:
             },
         }
 
-        iteration_count = state.get("iteration_count", 0) + 1
-
+        # iteration_count is owned by strategy_critic — don't double-count here,
+        # otherwise MAX_CRITIC_ITERATIONS counts merge passes too and we exit too early.
         return {
             "strategy_outputs": strategy_outputs,
-            "iteration_count": iteration_count,
             "current_node": "strategy_merge",
         }
 
     except Exception as e:
         return {
             "strategy_outputs": {"merged_strategies": [], "error": str(e)},
-            "iteration_count": state.get("iteration_count", 0) + 1,
             "errors": [f"Strategy merge error: {str(e)}"],
             "current_node": "strategy_merge",
         }
@@ -59,9 +57,21 @@ def _merge_strategy_outputs(economist: dict, jtbd: dict, growth: dict) -> list[d
     merged = []
     rank = 1
 
-    # Unit Economist — pull real data from agent output
+    # Operational fields surfaced from F6 strict-tier schemas. We forward them
+    # into merged_strategies so simulation/critic/dossier/UI can use them without
+    # re-walking each agent's full output.
+    _OPS_FIELDS = (
+        "target_event", "trigger_window", "success_metric_formula",
+        "min_sample_size", "expected_lift_pct_p50", "expected_lift_pct_p90",
+        "copy_example", "is_top_ranked",
+    )
+
+    def _ops(src: dict) -> dict:
+        return {k: src.get(k) for k in _OPS_FIELDS if src.get(k) is not None}
+
+    # Unit Economist
     if not economist.get("error"):
-        top = economist.get("top_roi_intervention", {})
+        top = economist.get("top_intervention") or economist.get("top_roi_intervention") or {}
         interventions = economist.get("proposed_interventions", [])
         if top or interventions:
             best = top if top else interventions[0]
@@ -74,14 +84,16 @@ def _merge_strategy_outputs(economist: dict, jtbd: dict, growth: dict) -> list[d
                 "rationale": best.get("rationale", ""),
                 "estimated_cost": best.get("estimated_cost", ""),
                 "cost_usd": best.get("cost_usd", 0),
+                **_ops(best),
             })
             rank += 1
 
-    # JTBD Specialist — pull real data from agent output
+    # JTBD Specialist
     if not jtbd.get("error"):
+        top = jtbd.get("top_intervention") or {}
         interventions = jtbd.get("proposed_interventions", [])
-        if interventions:
-            best = interventions[0]
+        best = top if top else (interventions[0] if interventions else {})
+        if best:
             merged.append({
                 "rank": rank,
                 "recommendation": best.get("intervention", ""),
@@ -91,14 +103,16 @@ def _merge_strategy_outputs(economist: dict, jtbd: dict, growth: dict) -> list[d
                 "rationale": best.get("rationale", ""),
                 "job_focus": best.get("job_focus", ""),
                 "implementation_effort": best.get("implementation_effort", ""),
+                **_ops(best),
             })
             rank += 1
 
-    # Growth Hacker — pull real data from agent output
+    # Growth Hacker
     if not growth.get("error"):
+        top = growth.get("top_tactic") or {}
         tactics = growth.get("proposed_tactics", [])
-        if tactics:
-            best = tactics[0]
+        best = top if top else (tactics[0] if tactics else {})
+        if best:
             merged.append({
                 "rank": rank,
                 "recommendation": best.get("name", ""),
@@ -108,6 +122,7 @@ def _merge_strategy_outputs(economist: dict, jtbd: dict, growth: dict) -> list[d
                 "rationale": best.get("description", ""),
                 "target_metric": best.get("target_metric", ""),
                 "implementation_timeline": best.get("implementation_timeline", ""),
+                **_ops(best),
             })
             rank += 1
 

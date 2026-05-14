@@ -34,6 +34,20 @@ async def adaptive_hitl_node(state: RetentionGraphState, config: RunnableConfig)
     stream = active_streams.get(job_id) if job_id else None
 
     try:
+        # On critic-retry, reuse prior HITL answers — don't re-prompt the user.
+        # Detected via iteration_count: critic_node sets this >= 1 once it has run.
+        if state.get("iteration_count", 0) >= 1:
+            prior = state.get("human_clarification") or {
+                "questions_asked": state.get("hitl_questions", []) or [],
+                "responses": {},
+                "clarification_status": "skipped_on_retry",
+            }
+            return {
+                "hitl_questions": prior.get("questions_asked", []),
+                "human_clarification": prior,
+                "current_node": "adaptive_hitl",
+            }
+
         constrained_brief = state.get("constrained_brief", {})
         verified_causes = state.get("verified_root_causes", [])
         applied_constraints = constrained_brief.get("applied_constraints", [])

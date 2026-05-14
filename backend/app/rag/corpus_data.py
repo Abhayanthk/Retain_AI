@@ -340,4 +340,58 @@ CORPUS = [
         "text": "When churn is concentrated in a single plan tier (>3× other tiers), do NOT try to 'fix' that plan. Instead, ask: should this plan exist? Many SaaS companies have a Starter plan that costs more to support than it generates in revenue. If Starter CAC payback >18 months and churn >40%, the plan is value-destructive. Options: raise price, remove features that cause support burden, or sunset the tier entirely.",
         "metadata": {"source": "SaaStr - Plan Portfolio", "topic": "pricing", "signals": "plan_tier_churn,high_churn,bad_fit,low_tier_concentration", "industry": "saas"},
     },
+
+    # ── Competitor Positioning (F14) ──────────────────────────
+    # When `churn_destination` names one of these, competitor_research_node retrieves
+    # the matching chunk so strategy agents can recommend defensible counter-positioning.
+    {
+        "id": "competitor_slack_teams",
+        "text": "Slack loses customers to Microsoft Teams primarily on bundling — Teams ships free with Microsoft 365 so finance teams treat Slack's per-seat cost as redundant. Slack retains best when (1) integrations make it a workflow hub the user can't replicate in Teams, (2) the company has hit the Slack 'aha' of 2,000 messages/team, and (3) admins value the better third-party app ecosystem. Counter-positioning playbook: surface a 'workflow integration audit' for at-risk teams, package Slack Connect (cross-company channels) as the must-have, and offer non-discount retention (extended free upgrade for admins committing 12 months).",
+        "metadata": {"source": "Competitor Positioning - Slack vs Teams", "topic": "competitor_positioning", "signals": "competitor_threat,bundling_loss,b2b_churn,switching_to_incumbent", "industry": "saas_collab"},
+    },
+    {
+        "id": "competitor_hubspot_salesforce",
+        "text": "HubSpot loses upmarket customers to Salesforce when their pipeline grows past ~50 sales reps or they need complex territory management. HubSpot retains best by leaning into ease-of-use, integrated marketing + CRM, and Sales Hub Enterprise pricing parity for sub-200-rep teams. Counter-play: when churn_destination is Salesforce, propose (1) a 'consolidation TCO comparison' explicitly priced against Salesforce + Marketo + Pardot, (2) named-account expansion via HubSpot Operations Hub instead of buying Salesforce, (3) executive sponsor map so the buyer survives a Salesforce-pitch internal review.",
+        "metadata": {"source": "Competitor Positioning - HubSpot vs Salesforce", "topic": "competitor_positioning", "signals": "competitor_threat,upmarket_churn,b2b_churn,enterprise_pull", "industry": "saas_crm"},
+    },
+    {
+        "id": "competitor_intercom_zendesk",
+        "text": "Intercom loses to Zendesk when companies grow beyond ~100 support agents and need ticketing rigor, omnichannel routing, and SLAs. Intercom retains best on conversational-first support teams that value automation (Fin AI, Resolution Bot) and proactive messaging. Counter-play: when destination is Zendesk, lead with Fin AI deflection rates (typical 30-50%), bundle Intercom Messenger as a marketing/onboarding tool not just a help widget, and offer agent-seat consolidation pricing for teams under 200 agents.",
+        "metadata": {"source": "Competitor Positioning - Intercom vs Zendesk", "topic": "competitor_positioning", "signals": "competitor_threat,scale_friction,b2b_churn,support_tooling", "industry": "saas_support"},
+    },
+    {
+        "id": "competitor_notion_confluence",
+        "text": "Notion loses enterprise accounts to Confluence when IT/security teams require SOC2 Type II, audit logging, and Atlassian-stack integration with Jira. Notion retains best with product/design/marketing functions that value flexibility and the AI features. Counter-play: when churn_destination is Confluence, emphasize Notion AI's roadmap, ship admin-control parity (granular permissions, content lifecycle, audit), and offer non-Atlassian customers a Jira-integration roadmap commitment as part of renewal.",
+        "metadata": {"source": "Competitor Positioning - Notion vs Confluence", "topic": "competitor_positioning", "signals": "competitor_threat,enterprise_pull,b2b_churn,security_gap", "industry": "saas_docs"},
+    },
+    {
+        "id": "competitor_asana_jira",
+        "text": "Asana loses engineering-heavy teams to Jira because Jira's workflow customization and DevOps integrations (Bitbucket, GitHub PR linking, deployment markers) are deeper. Asana retains best with cross-functional teams (marketing × eng × ops) that find Jira too rigid. Counter-play: when destination is Jira, position Asana as the 'connector' across non-eng functions, offer side-by-side deployments (Jira for eng, Asana for everyone else) with clear handoff rituals, and bundle Asana for Goals (OKR) as a Jira-exclusive gap.",
+        "metadata": {"source": "Competitor Positioning - Asana vs Jira", "topic": "competitor_positioning", "signals": "competitor_threat,b2b_churn,workflow_depth_gap", "industry": "saas_pm"},
+    },
+    {
+        "id": "competitor_mailchimp_klaviyo",
+        "text": "Mailchimp loses ecommerce customers to Klaviyo because Klaviyo's Shopify-native event model and revenue-per-recipient reporting are the category standard. Mailchimp retains best with non-ecommerce SMBs (services, nonprofits, content businesses) that value the easier learning curve. Counter-play: when destination is Klaviyo, do NOT compete on ecommerce automation depth — instead reinforce all-in-one value (email + landing pages + CRM + ads), or actively decline ecommerce ICP fit and lean into your stronger non-ecommerce segments.",
+        "metadata": {"source": "Competitor Positioning - Mailchimp vs Klaviyo", "topic": "competitor_positioning", "signals": "competitor_threat,ecommerce_pull,smb_churn,segment_misfit", "industry": "saas_marketing"},
+    },
+    {
+        "id": "competitor_zoom_meet",
+        "text": "Zoom loses customers to Google Meet primarily on bundling with Google Workspace, identical to the Slack-vs-Teams pattern. Zoom retains best where webinar features, breakout-room reliability, or non-Workspace customers dominate. Counter-play: when destination is Meet, focus on Zoom Phone + Zoom Contact Center as the bundle defense, surface usage of Webinar/Events features (sunk-cost retention), and offer multi-year pricing locks for accounts considering Workspace migration.",
+        "metadata": {"source": "Competitor Positioning - Zoom vs Meet", "topic": "competitor_positioning", "signals": "competitor_threat,bundling_loss,b2b_churn,switching_to_incumbent", "industry": "saas_video"},
+    },
+    {
+        "id": "competitor_figma_sketch",
+        "text": "Figma's biggest competitor risk historically was Sketch (and the Adobe acquisition arc); today the real threat is in-house or Penpot for cost-sensitive teams. Figma retains best where multiplayer editing, design systems (Figma Variables), and FigJam adoption have created switching costs. Counter-play: when churn signals are price-driven, push annual prepayment + FigJam bundling rather than seat discounts (which erode price anchor); for security-sensitive accounts, lead with Figma Organization's audit + SSO.",
+        "metadata": {"source": "Competitor Positioning - Figma Defense", "topic": "competitor_positioning", "signals": "competitor_threat,price_sensitivity,switching_costs", "industry": "saas_design"},
+    },
+    {
+        "id": "competitor_stripe_square",
+        "text": "Stripe loses brick-and-mortar / restaurant / retail accounts to Square because Square bundles hardware, in-person POS, and payroll into one SKU. Stripe retains best with online-first or developer-heavy businesses. Counter-play: when destination is Square, do not retrofit hardware — instead double down on Stripe Terminal partner SDKs, Stripe Connect for marketplaces, and Stripe Billing/Tax automation. For mixed-channel customers, propose a phased coexistence (Square in-person + Stripe online) rather than fighting for both.",
+        "metadata": {"source": "Competitor Positioning - Stripe vs Square", "topic": "competitor_positioning", "signals": "competitor_threat,segment_misfit,b2b_churn", "industry": "saas_payments"},
+    },
+    {
+        "id": "competitor_generic_incumbent",
+        "text": "When a startup loses customers to an incumbent (Microsoft, Salesforce, Adobe, Google), three patterns dominate: (1) bundle gravity — the buyer already pays the incumbent and treats the startup as redundant cost; (2) procurement risk aversion — 'nobody got fired for buying X'; (3) vendor consolidation pressure during budget cycles. Counter-positioning: pick ONE wedge feature the incumbent cannot match in <12 months, instrument 'irreplaceable usage' (a metric that quantifies dependency), and time renewal conversations to land BEFORE the incumbent's annual budget review.",
+        "metadata": {"source": "Competitor Positioning - Generic Incumbent Loss", "topic": "competitor_positioning", "signals": "competitor_threat,bundling_loss,procurement_risk,switching_to_incumbent", "industry": "saas"},
+    },
 ]

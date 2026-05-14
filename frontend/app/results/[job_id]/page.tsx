@@ -28,28 +28,129 @@ interface ChurnProfile {
   milestone_retention: Record<string, number>; behavior_cohorts: Cohort[];
   survival_curve?: Record<string, number>;
 }
-interface Hypothesis { hypothesis: string; confidence: number; supported_by: string[]; }
+interface EvidenceSource { id: string; source: string; topic: string; score?: number; }
+interface Hypothesis {
+  hypothesis: string;
+  confidence: number;
+  supported_by: string[];
+  citations?: string[];
+  evidence_sources?: EvidenceSource[];
+}
+interface TopSegment {
+  segment_id: string; source: string; label: string;
+  size: number; retention_rate: number; churn_rate: number;
+  descriptor: string; dominant_cause?: string | null;
+}
+interface DriverFeature {
+  feature: string; hazard_ratio: number; coef: number;
+  p_value: number; direction: string; significant?: boolean;
+}
+interface StatBucketEntry { churn_rate: number; size: number; }
+type StatBuckets = Record<string, Record<string, StatBucketEntry>>;
+interface ForensicFindingsRich {
+  suspected_causes?: string[];
+  confidence_scores?: Record<string, number>;
+  citations?: Record<string, string[]>;
+  per_cause_evidence?: Record<string, EvidenceSource[]>;
+  statistical_evidence?: {
+    churn_rate?: number;
+    churn_by_channel?: Record<string, StatBucketEntry>;
+    churn_by_plan_tier?: Record<string, StatBucketEntry>;
+    churn_by_support_volume?: Record<string, StatBucketEntry>;
+    churn_by_usage_decile?: Record<string, StatBucketEntry>;
+    churn_rate_by_tenure_bucket?: Record<string, StatBucketEntry>;
+    time_to_churn_distribution?: Record<string, number>;
+    [key: string]: unknown;
+  };
+  driver_features?: DriverFeature[];
+  consensus_metadata?: {
+    runs_total: number; runs_temps: number[]; vote_threshold: number;
+    fallback_used: boolean;
+    votes?: { cause: string; votes: number; mean_confidence: number; phrasings?: string[] }[];
+  };
+  hyde_answer?: string;
+}
+interface SkepticAltExplanation { hypothesis?: string; alternative?: string; testability?: string; }
+interface SkepticCounterArg { hypothesis?: string; counter_argument?: string; strength?: string; }
+interface SkepticBiasFlag { issue?: string; risk?: string; recommendation?: string; }
+interface ProfessionalSkepticOutput {
+  counter_arguments?: SkepticCounterArg[];
+  alternative_explanations?: SkepticAltExplanation[];
+  bias_flags?: SkepticBiasFlag[];
+  robustness_scores?: Record<string, number>;
+}
+interface CompetitorResearch {
+  matched: boolean; competitor?: string | null; churn_destination?: string;
+  evidence?: { id: string; source: string; topic: string; score?: number; snippet?: string }[];
+  counter_positioning?: string[];
+  error?: string;
+}
 interface DiagnosisData {
   merged_hypotheses: Hypothesis[];
-  forensic_findings?: { signal?: string; citation?: string; strength?: string }[] | { suspected_causes?: string[]; citations?: Record<string, string[]> };
+  forensic_findings?: ForensicFindingsRich | { signal?: string; citation?: string; strength?: string }[];
   pattern_findings?: { segment?: string; size?: number; retention?: number; signature?: string }[];
-  skeptic_findings?: { caveat?: string }[] | unknown;
+  skeptic_findings?: ProfessionalSkepticOutput | { caveat?: string }[] | unknown;
   total_patterns_identified?: number;
   competitors?: string[] | string;
   churn_destination?: string;
+  top_segments?: TopSegment[];
+  driver_features?: DriverFeature[];
+  competitor_research?: CompetitorResearch;
 }
-interface SimIntervention { name: string; p10: number; mean: number; p90: number; }
+interface SimIntervention {
+  name: string; p10: number; mean: number; p90: number;
+  lift_prior_anchor?: "rag" | "self_reported" | null;
+  lift_prior_pct?: number;
+  lift_prior_citations?: string[];
+}
+interface StrategySkepticWeakPoint { tactic: string; weakness: string; severity: "low" | "medium" | "high"; }
+interface StrategySkepticAssumption { assumption: string; why_risky: string; mitigation: string; }
+interface StrategySkepticAlternative { instead_of: string; alternative: string; why_better: string; }
+interface StrategySkepticOutput {
+  weak_points?: StrategySkepticWeakPoint[];
+  assumption_risks?: StrategySkepticAssumption[];
+  alternative_tactics?: StrategySkepticAlternative[];
+  overall_robustness?: number;
+  headline_critique?: string;
+}
 interface SimulationData {
   expected_lift: number; confidence_low: number; confidence_high: number;
   expected_roi: number; iterations: number; interventions: SimIntervention[];
+  rag_anchored_count?: number;
+  strategy_skeptic?: StrategySkepticOutput;
 }
 interface ImplStep { step: number; action: string; owner: string; effort?: string; timeline: string; deliverable?: string; dependencies?: string[]; }
+interface RationaleChainStat { stat_id?: string; source?: string; churn_rate?: number | null; size?: number | null; label?: string; }
+interface RationaleChainCause { text?: string; confidence?: number | null; citations?: string[]; }
+interface RationaleChainTactic {
+  recommendation?: string; framework?: string;
+  target_event?: string | null; trigger_window?: string | null;
+  success_metric_formula?: string | null; min_sample_size?: number | null;
+  expected_lift_pct_p50?: number | null; expected_lift_pct_p90?: number | null;
+  copy_example?: string | null;
+}
+interface RationaleChainOutcome {
+  mean_lift?: number | null; percentile_10?: number | null; percentile_90?: number | null;
+  lift_prior_anchor?: string | null;
+}
+interface RationaleChainRisk { source?: string; severity?: string; description?: string; }
+interface RationaleChainMitigation { source?: string; description?: string; }
+interface RationaleChain {
+  rank?: number;
+  stat?: RationaleChainStat;
+  cause?: RationaleChainCause;
+  tactic?: RationaleChainTactic;
+  simulated_outcome?: RationaleChainOutcome;
+  risk?: RationaleChainRisk;
+  mitigation?: RationaleChainMitigation;
+}
 interface ProblemSolution {
   priority: number;
   problem: { title: string; description: string; affected_segment: string; current_impact: string };
   solution: { title: string; description: string; framework_used: string; key_actions: string[] };
   retention_impact: { estimated_lift_percent: number; estimated_users_retained: number; estimated_revenue_impact: string; confidence: number; time_to_impact: string };
   implementation_steps: ImplStep[];
+  rationale_chain?: RationaleChain;
 }
 interface PhaseSummary { theme: string; goals: string[]; key_milestones?: string[]; expected_lift: string; }
 interface SuccessMetric { metric: string; current_value: string; target_value: string; measurement_method?: string; review_frequency?: string; }
@@ -62,6 +163,7 @@ interface Playbook {
   success_metrics?: SuccessMetric[];
   risks_and_mitigations?: PlaybookRisk[];
   resource_requirements?: { team?: string[]; technology?: string[]; budget_breakdown?: Record<string, string> };
+  reasoning_trace?: string;
 }
 
 /* ─── ctx ───────────────────────────────────────────────────── */
@@ -356,11 +458,11 @@ function ChurnProfileSection({ data, ctx, visible }: { data: ChurnProfile; ctx: 
   );
 }
 
-function DiagnosisSection({ data, ctx, visible }: { data: DiagnosisData; ctx: Ctx; visible: boolean }) {
+function DiagnosisSection({ data, ctx, visible, onOpenEvidence }: { data: DiagnosisData; ctx: Ctx; visible: boolean; onOpenEvidence: (idx: number) => void }) {
   const hyps = data.merged_hypotheses ?? [];
   const forensicArr = Array.isArray(data.forensic_findings) ? data.forensic_findings : [];
   const patternArr = data.pattern_findings ?? [];
-  const skepticArr = Array.isArray(data.skeptic_findings) ? (data.skeptic_findings as any[]) : [];
+  const skepticArr = Array.isArray(data.skeptic_findings) ? (data.skeptic_findings as Array<{ caveat?: string; counter_argument?: string }>) : [];
   const competitorText = ctx.competitors || (Array.isArray(data.competitors) ? data.competitors.join(", ") : data.competitors) || "";
   return (
     <section className={`section ${visible ? "visible" : ""}`}>
@@ -373,17 +475,29 @@ function DiagnosisSection({ data, ctx, visible }: { data: DiagnosisData; ctx: Ct
       </div>
       <div className="hyp-list">
         {hyps.slice(0, 3).map((h, i) => (
-          <div className="hyp" key={i}>
+          <button
+            type="button"
+            className="hyp hyp-clickable"
+            key={i}
+            onClick={() => onOpenEvidence(i)}
+            aria-label={`Open evidence drawer for hypothesis ${i + 1}`}
+          >
             <div className="hyp-row">
               <div className="hyp-num">{i + 1}</div>
               <div className="hyp-text">{h.hypothesis}</div>
               <div className="hyp-conf tnum">{Math.round(h.confidence * 100)}%</div>
             </div>
             <div className="hyp-bar"><div className="hyp-bar-fill" style={{ width: visible ? `${h.confidence * 100}%` : "0%" }} /></div>
-            <div className="hyp-tags">
-              {(h.supported_by ?? []).map((t) => <span key={t} className="hyp-tag">supported by · {t}</span>)}
+            <div className="hyp-bottom">
+              <div className="hyp-tags">
+                {(h.supported_by ?? []).map((t) => <span key={t} className="hyp-tag">supported by · {t}</span>)}
+                {(h.citations?.length ?? 0) > 0 && (
+                  <span className="hyp-tag">{h.citations!.length} citations</span>
+                )}
+              </div>
+              <span className="hyp-open">open evidence&nbsp;→</span>
             </div>
-          </div>
+          </button>
         ))}
       </div>
       {competitorText && (
@@ -547,6 +661,112 @@ function ImplStepRow({ s, ctx }: { s: ImplStep; ctx: Ctx }) {
   );
 }
 
+function RationaleChainStrip({ chain }: { chain: RationaleChain }) {
+  const steps: { label: string; body: React.ReactNode; tone: string }[] = [];
+  if (chain.stat?.stat_id) {
+    const cr = chain.stat.churn_rate;
+    const sz = chain.stat.size;
+    steps.push({
+      label: "stat",
+      tone: "amber",
+      body: (
+        <>
+          <div className="rc-id tnum">{chain.stat.stat_id}</div>
+          {(cr != null || sz != null) && (
+            <div className="rc-meta tnum">
+              {cr != null && <>{(cr * 100).toFixed(1)}%</>}
+              {cr != null && sz != null && <> · </>}
+              {sz != null && <>{sz.toLocaleString()} users</>}
+            </div>
+          )}
+        </>
+      ),
+    });
+  }
+  if (chain.cause?.text) {
+    steps.push({
+      label: "cause",
+      tone: "purple",
+      body: <div className="rc-line">{chain.cause.text}</div>,
+    });
+  }
+  if (chain.tactic?.recommendation) {
+    steps.push({
+      label: "tactic",
+      tone: "emerald",
+      body: (
+        <>
+          <div className="rc-line">{chain.tactic.recommendation}</div>
+          {(chain.tactic.target_event || chain.tactic.trigger_window) && (
+            <div className="rc-meta tnum">
+              {chain.tactic.target_event && <>event · {chain.tactic.target_event}</>}
+              {chain.tactic.target_event && chain.tactic.trigger_window && <> · </>}
+              {chain.tactic.trigger_window && <>window · {chain.tactic.trigger_window}</>}
+            </div>
+          )}
+        </>
+      ),
+    });
+  }
+  if (chain.simulated_outcome?.mean_lift != null) {
+    const anchor = chain.simulated_outcome.lift_prior_anchor;
+    steps.push({
+      label: "outcome",
+      tone: "teal",
+      body: (
+        <>
+          <div className="rc-line tnum">
+            +{Number(chain.simulated_outcome.mean_lift).toFixed(1)}% mean lift
+            {chain.simulated_outcome.percentile_10 != null && chain.simulated_outcome.percentile_90 != null && (
+              <> · p10–p90 {Number(chain.simulated_outcome.percentile_10).toFixed(1)}–{Number(chain.simulated_outcome.percentile_90).toFixed(1)}%</>
+            )}
+          </div>
+          {anchor && <div className="rc-meta">prior · {anchor === "rag" ? "RAG-anchored" : "self-reported"}</div>}
+        </>
+      ),
+    });
+  }
+  if (chain.risk?.description) {
+    steps.push({
+      label: "risk",
+      tone: "red",
+      body: (
+        <>
+          <div className="rc-line">{chain.risk.description}</div>
+          {chain.risk.severity && <div className="rc-meta">severity · {chain.risk.severity}</div>}
+        </>
+      ),
+    });
+  }
+  if (chain.mitigation?.description) {
+    steps.push({
+      label: "mitigation",
+      tone: "violet",
+      body: <div className="rc-line">{chain.mitigation.description}</div>,
+    });
+  }
+  if (steps.length === 0) return null;
+  return (
+    <div className="rc-strip">
+      <div className="rc-strip-head">
+        <span className="rc-strip-title">Rationale chain</span>
+        <span className="rc-strip-sub">stat → cause → tactic → outcome → risk → mitigation</span>
+      </div>
+      <ol className="rc-list">
+        {steps.map((step, i) => (
+          <li key={`${step.label}-${i}`} className={`rc-step rc-${step.tone}`}>
+            <div className="rc-dot" aria-hidden="true" />
+            <div className="rc-step-body">
+              <div className="rc-step-label">{step.label}</div>
+              {step.body}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 function ProblemCard({ p, ctx, defaultOpen }: { p: ProblemSolution; ctx: Ctx; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(!!defaultOpen);
   const cls = p.priority === 1 ? "priority" : p.priority === 2 ? "p2" : "p3";
@@ -569,6 +789,7 @@ function ProblemCard({ p, ctx, defaultOpen }: { p: ProblemSolution; ctx: Ctx; de
           <div className="problem-solution-title">Solution · {p.solution.title}</div>
           <div className="problem-solution-body">{p.solution.description}</div>
           <div className="problem-framework">Framework · {p.solution.framework_used}</div>
+          {p.rationale_chain && <RationaleChainStrip chain={p.rationale_chain} />}
           <div className="impl-list">
             {(p.implementation_steps ?? []).map((s) => <ImplStepRow key={s.step} s={s} ctx={ctx} />)}
           </div>
@@ -587,6 +808,295 @@ function Collapsible({ title, count, children, defaultOpen }: { title: string; c
         <span className="chev">▾</span>
       </button>
       {open && <div className="collapsible-body">{children}</div>}
+    </div>
+  );
+}
+
+/* ─── Evidence Drawer (F15) ─────────────────────────────────── */
+function tokens(s: string | undefined, minLen = 5): Set<string> {
+  if (!s) return new Set();
+  return new Set(
+    s
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= minLen),
+  );
+}
+
+function bestStatForHypothesis(
+  hypText: string,
+  forensic: ForensicFindingsRich | undefined,
+): { stat_id: string; source: string; label: string; churn_rate: number; size: number } | null {
+  if (!forensic?.statistical_evidence) return null;
+  const stats = forensic.statistical_evidence;
+  const hypKw = tokens(hypText);
+  const buckets: [string, Record<string, StatBucketEntry> | undefined][] = [
+    ["churn_by_plan_tier", stats.churn_by_plan_tier],
+    ["churn_by_channel", stats.churn_by_channel],
+    ["churn_by_support_volume", stats.churn_by_support_volume],
+    ["churn_by_usage_decile", stats.churn_by_usage_decile],
+    ["churn_rate_by_tenure_bucket", stats.churn_rate_by_tenure_bucket],
+  ];
+  let best: { stat_id: string; source: string; label: string; churn_rate: number; size: number; score: number } | null = null;
+  for (const [name, bucket] of buckets) {
+    if (!bucket) continue;
+    for (const [label, payload] of Object.entries(bucket)) {
+      if (!payload || typeof payload.churn_rate !== "number" || !payload.size) continue;
+      const labelKw = tokens(`${name} ${label}`);
+      let overlap = 0;
+      labelKw.forEach((t) => { if (hypKw.has(t)) overlap += 1; });
+      const score = overlap * 1000 + payload.churn_rate * payload.size;
+      if (!best || score > best.score) {
+        best = {
+          stat_id: `${name}::${label}`,
+          source: name,
+          label,
+          churn_rate: payload.churn_rate,
+          size: payload.size,
+          score,
+        };
+      }
+    }
+  }
+  if (!best) return null;
+  const { score: _drop, ...rest } = best;
+  void _drop;
+  return rest;
+}
+
+function matchSkepticForHypothesis(
+  hypText: string,
+  skeptic: ProfessionalSkepticOutput | undefined,
+): { counter: SkepticCounterArg | null; alt: SkepticAltExplanation | null } {
+  if (!skeptic) return { counter: null, alt: null };
+  const hypKw = tokens(hypText);
+  const scoreText = (t: string | undefined): number => {
+    if (!t) return 0;
+    let s = 0;
+    tokens(t).forEach((tok) => { if (hypKw.has(tok)) s += 1; });
+    return s;
+  };
+  const counter = (skeptic.counter_arguments ?? [])
+    .map((c) => ({ c, s: scoreText(c.hypothesis) + scoreText(c.counter_argument) }))
+    .sort((a, b) => b.s - a.s)[0]?.c ?? null;
+  const alt = (skeptic.alternative_explanations ?? [])
+    .map((a) => ({ a, s: scoreText(a.hypothesis) + scoreText(a.alternative) }))
+    .sort((x, y) => y.s - x.s)[0]?.a ?? null;
+  return { counter, alt };
+}
+
+function EvidenceDrawer({
+  hypothesis,
+  rank,
+  forensic,
+  skeptic,
+  driverFeatures,
+  topSegments,
+  onClose,
+}: {
+  hypothesis: Hypothesis;
+  rank: number;
+  forensic?: ForensicFindingsRich;
+  skeptic?: ProfessionalSkepticOutput;
+  driverFeatures?: DriverFeature[];
+  topSegments?: TopSegment[];
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [onClose]);
+
+  const stat = bestStatForHypothesis(hypothesis.hypothesis, forensic);
+  const { counter, alt } = matchSkepticForHypothesis(hypothesis.hypothesis, skeptic);
+  const evSources = hypothesis.evidence_sources ?? [];
+  const citationIds = hypothesis.citations ?? [];
+
+  // Try to find a matching top_segment with the same source family.
+  const matchedSegment = stat && topSegments
+    ? topSegments.find((s) => s.segment_id === stat.stat_id) ?? null
+    : null;
+
+  return (
+    <div className="ed-backdrop" onClick={onClose} role="dialog" aria-modal="true">
+      <aside className="ed-drawer" onClick={(e) => e.stopPropagation()}>
+        <div className="ed-spine" aria-hidden="true" />
+        <header className="ed-head">
+          <div className="ed-eyebrow">
+            <span className="ed-rank tnum">EVIDENCE&nbsp;·&nbsp;HYPOTHESIS&nbsp;{rank.toString().padStart(2, "0")}</span>
+            <button className="ed-close" onClick={onClose} aria-label="Close evidence drawer">esc&nbsp;✕</button>
+          </div>
+          <h3 className="ed-title">{hypothesis.hypothesis}</h3>
+          <div className="ed-confidence">
+            <span className="ed-conf-label">confidence</span>
+            <div className="ed-conf-bar"><div className="ed-conf-fill" style={{ width: `${Math.round(hypothesis.confidence * 100)}%` }} /></div>
+            <span className="ed-conf-pct tnum">{Math.round(hypothesis.confidence * 100)}%</span>
+          </div>
+        </header>
+
+        <div className="ed-chain">
+          {/* 1 — Triggering stat */}
+          <article className="ed-node ed-node-amber">
+            <div className="ed-node-mark" aria-hidden="true">01</div>
+            <div className="ed-node-kind">Triggering stat</div>
+            {stat ? (
+              <>
+                <div className="ed-stat-id tnum">{stat.stat_id}</div>
+                <div className="ed-stat-row">
+                  <div>
+                    <div className="ed-stat-k">Churn rate</div>
+                    <div className="ed-stat-v amber tnum">{(stat.churn_rate * 100).toFixed(1)}%</div>
+                  </div>
+                  <div>
+                    <div className="ed-stat-k">Segment size</div>
+                    <div className="ed-stat-v tnum">{stat.size.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="ed-stat-k">Lost users (est.)</div>
+                    <div className="ed-stat-v red tnum">≈ {Math.round(stat.churn_rate * stat.size).toLocaleString()}</div>
+                  </div>
+                </div>
+                {matchedSegment && (
+                  <div className="ed-stat-foot">descriptor · {matchedSegment.descriptor}</div>
+                )}
+              </>
+            ) : (
+              <div className="ed-empty">No statistical bucket overlapped this hypothesis. Heuristic match was below threshold.</div>
+            )}
+          </article>
+
+          {/* 2 — RAG citations */}
+          <article className="ed-node ed-node-purple">
+            <div className="ed-node-mark" aria-hidden="true">02</div>
+            <div className="ed-node-kind">RAG citations</div>
+            {evSources.length > 0 || citationIds.length > 0 ? (
+              <ul className="ed-cite-list">
+                {evSources.map((e) => (
+                  <li key={e.id} className="ed-cite">
+                    <span className="ed-cite-id tnum">{e.id}</span>
+                    <span className="ed-cite-source">{e.source}</span>
+                    {e.topic && <span className="ed-cite-topic">· {e.topic}</span>}
+                    {typeof e.score === "number" && <span className="ed-cite-score tnum">{e.score.toFixed(3)}</span>}
+                  </li>
+                ))}
+                {citationIds
+                  .filter((id) => !evSources.some((s) => s.id === id))
+                  .map((id) => (
+                    <li key={id} className="ed-cite">
+                      <span className="ed-cite-id tnum">{id}</span>
+                      <span className="ed-cite-source">cited</span>
+                    </li>
+                  ))}
+              </ul>
+            ) : (
+              <div className="ed-empty">No framework citations attached to this hypothesis.</div>
+            )}
+          </article>
+
+          {/* 3 — Skeptic caveat */}
+          <article className="ed-node ed-node-amber2">
+            <div className="ed-node-mark" aria-hidden="true">03</div>
+            <div className="ed-node-kind">Skeptic caveat</div>
+            {counter ? (
+              <>
+                <div className="ed-skeptic-text">{counter.counter_argument}</div>
+                {counter.strength && (
+                  <div className="ed-skeptic-meta">
+                    <span className={`ed-sev ed-sev-${(counter.strength ?? "medium").toLowerCase()}`}>{counter.strength}</span>
+                    <span className="ed-skeptic-pin">— evidence challenge from professional_skeptic</span>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="ed-empty">Skeptic did not register a directed counter-argument against this hypothesis.</div>
+            )}
+          </article>
+
+          {/* 4 — Alternative explanation */}
+          <article className="ed-node ed-node-violet">
+            <div className="ed-node-mark" aria-hidden="true">04</div>
+            <div className="ed-node-kind">Alternative explanation</div>
+            {alt ? (
+              <>
+                <div className="ed-skeptic-text">{alt.alternative}</div>
+                {alt.testability && (
+                  <div className="ed-skeptic-meta">
+                    <span className={`ed-sev ed-sev-${(alt.testability ?? "medium").toLowerCase()}`}>testability · {alt.testability}</span>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="ed-empty">No alternative explanation was generated for this hypothesis.</div>
+            )}
+          </article>
+
+          {/* 5 — Driver features */}
+          <article className="ed-node ed-node-blue">
+            <div className="ed-node-mark" aria-hidden="true">05</div>
+            <div className="ed-node-kind">CoxPH hazard drivers</div>
+            {driverFeatures && driverFeatures.length > 0 ? (
+              <ul className="ed-driver-list">
+                {driverFeatures.slice(0, 5).map((d) => (
+                  <li key={d.feature} className="ed-driver">
+                    <div className="ed-driver-name">{d.feature}</div>
+                    <div className="ed-driver-stats tnum">
+                      <span>HR <b>{d.hazard_ratio.toFixed(2)}</b></span>
+                      <span>p {d.p_value.toFixed(3)}</span>
+                      <span className={`ed-dir ed-dir-${d.direction}`}>{d.direction}</span>
+                      {d.significant && <span className="ed-sig">significant</span>}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="ed-empty">No quantitative driver features available from CoxPH.</div>
+            )}
+          </article>
+        </div>
+
+        <footer className="ed-foot">
+          <span className="ed-foot-hint">esc · click backdrop · or</span>
+          <button className="ed-foot-btn" onClick={onClose}>close drawer</button>
+        </footer>
+      </aside>
+    </div>
+  );
+}
+
+function ReasoningTrace({ trace }: { trace: string }) {
+  const [open, setOpen] = useState(false);
+  const cleaned = trace.replace(/\r\n/g, "\n").trim();
+  const paragraphs = cleaned.split(/\n{2,}/);
+  return (
+    <div className={`rt-shell ${open ? "open" : ""}`}>
+      <button className="rt-toggle" onClick={() => setOpen(!open)}>
+        <span className="rt-rule" aria-hidden="true" />
+        <span className="rt-toggle-label">
+          <span className="rt-eyebrow">Pass 1 · freeform synthesis</span>
+          <span className="rt-title">Why this playbook</span>
+        </span>
+        <span className="rt-toggle-meta tnum">{cleaned.length.toLocaleString()} chars · {paragraphs.length} paragraphs</span>
+        <span className="rt-chev">{open ? "▴" : "▾"}</span>
+      </button>
+      {open && (
+        <div className="rt-body">
+          <div className="rt-margin" aria-hidden="true">
+            <span className="rt-margin-mark">↳</span>
+            <span className="rt-margin-text">reasoning trace</span>
+          </div>
+          <div className="rt-prose">
+            {paragraphs.map((para, i) => (
+              <p key={i} className="rt-para">{para.trim()}</p>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -714,6 +1224,9 @@ function StrategySection({ data, ctx, visible }: { data: Playbook; ctx: Ctx; vis
           ))}
         </Collapsible>
       )}
+      {data.reasoning_trace && (
+        <ReasoningTrace trace={data.reasoning_trace} />
+      )}
       {data.resource_requirements && !ctx.quickWins && (
         <Collapsible title="Resource Requirements" count="team · tech · budget">
           <div className="res-grid">
@@ -835,6 +1348,7 @@ export default function ResultsPage() {
   const [hitlSubmitted, setHitlSubmitted] = useState(false);
   const [hitlSubmitting, setHitlSubmitting] = useState(false);
   const [ctx, setCtx] = useState<Ctx>(() => buildCtx({}));
+  const [evidenceOpenIdx, setEvidenceOpenIdx] = useState<number | null>(null);
 
   useEffect(() => {
     try {
@@ -985,7 +1499,7 @@ export default function ResultsPage() {
             {churn ? <ChurnProfileSection data={churn} ctx={ctx} visible={true} />
                    : <PendingSection title="Churn Profile" color="blue" label="Stage 2 · awaiting churn_profile_ready" />}
 
-            {dx ? <DiagnosisSection data={dx} ctx={ctx} visible={true} />
+            {dx ? <DiagnosisSection data={dx} ctx={ctx} visible={true} onOpenEvidence={(i) => setEvidenceOpenIdx(i)} />
                 : <PendingSection title="Root Cause" color="purple" label="Stage 3 · awaiting diagnosis_ready" />}
 
             {hitlData && hitlSubmitted && (
@@ -1015,6 +1529,30 @@ export default function ResultsPage() {
             onSubmit={handleHitlSubmit}
             onSkipAll={handleSkipAll}
             submitting={hitlSubmitting}
+          />
+        )}
+
+        {evidenceOpenIdx !== null && dx?.merged_hypotheses?.[evidenceOpenIdx] && (
+          <EvidenceDrawer
+            hypothesis={dx.merged_hypotheses[evidenceOpenIdx]}
+            rank={evidenceOpenIdx + 1}
+            forensic={
+              dx.forensic_findings && !Array.isArray(dx.forensic_findings)
+                ? (dx.forensic_findings as ForensicFindingsRich)
+                : undefined
+            }
+            skeptic={
+              dx.skeptic_findings && !Array.isArray(dx.skeptic_findings)
+                ? (dx.skeptic_findings as ProfessionalSkepticOutput)
+                : undefined
+            }
+            driverFeatures={dx.driver_features ?? (
+              dx.forensic_findings && !Array.isArray(dx.forensic_findings)
+                ? (dx.forensic_findings as ForensicFindingsRich).driver_features
+                : undefined
+            )}
+            topSegments={dx.top_segments}
+            onClose={() => setEvidenceOpenIdx(null)}
           />
         )}
       </div>

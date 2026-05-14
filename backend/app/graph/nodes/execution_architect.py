@@ -15,7 +15,7 @@ from datetime import datetime
 
 from langchain_core.prompts import ChatPromptTemplate
 from app.graph.state import RetentionGraphState
-from app.graph.utils import safe_llm_invoke
+from app.graph.utils import safe_llm_invoke, extract_llm_text
 from app.config import get_llm
 
 class ExecutiveSummary(BaseModel):
@@ -119,13 +119,22 @@ def execution_architect_node(state: RetentionGraphState) -> dict:
         simulations = state.get("simulations", {})
         criticism = state.get("criticism", {})
         hitl_answers = state.get("human_clarification", {}).get("responses", {})
+        top_segments = state.get("top_segments", []) or []
+        feature_store_for_drivers = state.get("feature_store", {}) or {}
+        driver_features = (feature_store_for_drivers.get("predictive_churn_risk", {}) or {}).get("driver_features", []) or []
+        evidence_dossier = state.get("evidence_dossier", []) or []
+        competitor_research = state.get("competitor_research_output", {}) or {}
 
         # Strategy agent outputs
         economist_output = state.get("unit_economist_output", {})
         jtbd_output = state.get("jtbd_specialist_output", {})
         growth_output = state.get("growth_hacker_output", {})
 
-        llm = get_llm("gemini", temperature=0.3)
+        # F12: two-pass synthesis. Pass 1 generates a freeform reasoning trace at
+        # higher temp; pass 2 (lower temp, structured) consumes that trace to
+        # produce the final Pydantic-validated playbook.
+        llm_trace = get_llm("gemini", temperature=0.4)
+        llm_struct = get_llm("gemini", temperature=0.1)
 
         prompt = ChatPromptTemplate.from_template(
             """You are a senior retention strategist creating a final execution playbook for a real company.
@@ -150,6 +159,12 @@ Already tried (do NOT re-propose): {already_tried}
 ## Verified Root Causes (from data analysis)
 {root_causes}
 
+## Top Segments (real sizes — use for affected_segment + estimated_users_retained)
+{top_segments}
+
+## CoxPH Hazard Drivers (quantitative — cite hazard ratio in current_impact)
+{drivers}
+
 ## Strategies Proposed (from specialist agents)
 Unit Economist: {economist}
 JTBD Specialist: {jtbd}
@@ -157,6 +172,18 @@ Growth Hacker: {growth}
 
 ## Merged Strategy Recommendations
 {strategies}
+
+## Competitor Research (only present when churn_destination is a known competitor)
+{competitor_research}
+
+## Evidence Dossier (read this — one row per top problem, pre-assembled reasoning chain)
+Each row is: stat → cause → tactic → simulated_outcome → risk → mitigation.
+Problem #N in your output MUST correspond to dossier row #N (same rank, same root cause).
+Use the dossier `stat` to fill problem.current_impact, the dossier `risk` to fill at least
+one risks_and_mitigations entry, and the dossier `mitigation` to fill the corresponding
+contingency. The dossier is the source of truth — do not invent risks that aren't here.
+
+{dossier}
 
 ## Simulation Results
 Projected Lift: {lift}%
@@ -170,6 +197,9 @@ Simulations: {simulations}
 
 ## Human Clarifications (HITL answers)
 {hitl_answers}
+
+## Reasoning Trace (from your own pass-1 thinking — follow this synthesis)
+{reasoning_trace}
 
 ---
 
@@ -212,11 +242,98 @@ Field guidance:
 
         root_causes_str = json.dumps(verified_root_causes, indent=2)
         strategies_str = json.dumps(merged_strategies, indent=2)
+        dossier_str = (
+            json.dumps(evidence_dossier, indent=2)[:2500]
+            if evidence_dossier
+            else "(no dossier — fall back to root_causes + strategies)"
+        )
+        if competitor_research.get("matched"):
+            competitor_str = json.dumps(competitor_research, indent=2)[:1500]
+        else:
+            competitor_str = "(churn_destination is not a known competitor — skip counter-positioning specifics)"
+
+        if top_segments:
+            top_segments_str = "\n".join(
+                f"- {s['segment_id']} (size={s['size']}, churn={s['churn_rate']*100:.1f}%, "
+                f"retention={s['retention_rate']*100:.1f}%, descriptor='{s['descriptor']}'"
+                + (f", dominant_cause='{s['dominant_cause']}'" if s.get('dominant_cause') else '')
+                + ")"
+                for s in top_segments
+            )
+        else:
+            top_segments_str = "(no segment table available)"
+
+        if driver_features:
+            drivers_str = "\n".join(
+                f"- {d['feature']}: hazard_ratio={d['hazard_ratio']} ({d['direction']}, "
+                f"p={d['p_value']}{', significant' if d.get('significant') else ''})"
+                for d in driver_features
+            )
+        else:
+            drivers_str = "(no quantitative drivers)"
 
         competitors_val = questionnaire.get("competitors", [])
         competitors_str = ", ".join(competitors_val) if isinstance(competitors_val, list) else str(competitors_val or "None named")
+
+        # ── F12 Pass 1: freeform reasoning trace (no schema, higher temp) ─────
+        trace_prompt = ChatPromptTemplate.from_template(
+            """You are about to write a 30/60/90-day retention playbook. BEFORE writing it,
+think out loud about the synthesis. Do not produce the playbook itself — just the reasoning.
+
+Inputs you must reason over:
+- Verified Root Causes: {root_causes}
+- Evidence Dossier (rank → stat → cause → tactic → outcome → risk → mitigation):
+{dossier}
+- Top Segments: {top_segments}
+- CoxPH Hazard Drivers: {drivers}
+- Simulation: lift={lift}% with intervention_impacts {simulations}
+- Critic verdict + feedback: {criticism}
+- Competitor research (only if matched): {competitor_research}
+- Hard operational constraints: can_ship={can_ship}, support_model={support_model},
+  pricing_flex={pricing_flex}, timeline={timeline}, already_tried={already_tried}.
+
+Cover these questions in order, in plain prose (no JSON, no headings deeper than `##`):
+1. Which dossier rows become which playbook problems, and why this rank ordering?
+   Reference dossier stat_ids explicitly (e.g. `plan_tier::Starter`).
+2. Where do two root causes overlap and need to be merged into one problem?
+3. What is the cross-cutting risk that affects more than one problem, and what is the
+   single mitigation that addresses it best?
+4. How do the operational constraints shape the phase_1/2/3 split — what shifts to
+   later phases because of can_ship / pricing / support constraints?
+5. Where is the simulation prior weakest (anchor='self_reported' or low confidence),
+   and how should you hedge the language for that problem's expected_lift?
+6. What is the one piece of evidence you would NOT cite in the playbook because it's
+   weak or contradicted upstream?
+
+Output: continuous prose. Max ~450 words. Be specific. No fluff."""
+        )
+
+        try:
+            trace_raw = llm_trace.invoke(
+                trace_prompt.format(
+                    root_causes=root_causes_str[:1500],
+                    dossier=dossier_str,
+                    top_segments=top_segments_str[:800],
+                    drivers=drivers_str[:600],
+                    lift=lift_percent,
+                    simulations=json.dumps(simulations.get("intervention_impacts", []), indent=2)[:800]
+                        if simulations else "No simulation data",
+                    criticism=json.dumps(criticism, indent=2)[:600] if criticism else "No critic feedback",
+                    competitor_research=competitor_str[:600],
+                    can_ship=questionnaire.get("can_ship_changes", "Unknown"),
+                    support_model=questionnaire.get("support_model", "Unknown"),
+                    pricing_flex=", ".join(questionnaire.get("pricing_flexibility", [])) or "Unspecified",
+                    timeline=questionnaire.get("timeline", "Unspecified"),
+                    already_tried=", ".join(questionnaire.get("retention_tactics", [])) or "None",
+                )
+            )
+            reasoning_trace = extract_llm_text(trace_raw.content)
+        except Exception as trace_err:
+            # Trace is non-essential — pass 2 still has full structured context.
+            reasoning_trace = f"(reasoning-trace pass failed: {trace_err})"
+
         response = safe_llm_invoke(
-            llm, Playbook,
+            llm_struct, Playbook,
             prompt.format(
                 industry=questionnaire.get("business_context", input_context.get("industry", "Unknown")),
                 business_model=questionnaire.get("business_model", "Unknown"),
@@ -232,15 +349,20 @@ Field guidance:
                 churn_dest=questionnaire.get("churn_destination", "Unknown"),
                 already_tried=", ".join(questionnaire.get("retention_tactics", [])) or "None",
                 root_causes=root_causes_str,
+                top_segments=top_segments_str,
+                drivers=drivers_str,
                 economist=json.dumps(economist_output, indent=2)[:1500],
                 jtbd=json.dumps(jtbd_output, indent=2)[:1500],
                 growth=json.dumps(growth_output, indent=2)[:1500],
                 strategies=strategies_str,
+                competitor_research=competitor_str,
+                dossier=dossier_str,
                 lift=lift_percent,
                 simulations=json.dumps(simulations, indent=2)[:1000] if simulations else "No simulation data",
                 constraints=json.dumps(constrained_brief, indent=2)[:1000] if constrained_brief else "No constraints",
                 criticism=json.dumps(criticism, indent=2)[:500] if criticism else "No critic feedback",
                 hitl_answers=json.dumps(hitl_answers)[:500] if hitl_answers else "None provided",
+                reasoning_trace=reasoning_trace[:3000],
             ),
             agent_name="ExecutionArchitect",
         )
@@ -277,10 +399,18 @@ Field guidance:
                 p["priority"] = i + 1
             playbook["problems_and_solutions"] = deduped
 
+        # Attach rationale_chain from evidence_dossier (F11). Problem N → dossier row N.
+        problems_after_dedupe = playbook.get("problems_and_solutions", []) or []
+        for idx, problem in enumerate(problems_after_dedupe):
+            if idx < len(evidence_dossier):
+                problem["rationale_chain"] = evidence_dossier[idx]
+
         # Enrich with metadata
         playbook["created_date"] = datetime.now().isoformat()
         playbook["company"] = input_context.get("industry", "SaaS")
         playbook["estimated_total_lift"] = round(lift_percent, 1)
+        # F12: surface pass-1 trace so the UI can show "why this playbook".
+        playbook["reasoning_trace"] = reasoning_trace
 
         return {
             "final_playbook": playbook,

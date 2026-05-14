@@ -156,6 +156,8 @@ async def analyze_retention_job(*args, **kwargs):
                 diagnosis = state.get("diagnosis_results", {})
                 pattern_findings = state.get("pattern_findings", {})
                 q = state.get("questionnaire", {})
+                fs = state.get("feature_store", {}) or {}
+                driver_features = (fs.get("predictive_churn_risk", {}) or {}).get("driver_features", []) or []
                 await queue.put({
                     "type": "diagnosis_ready",
                     "message": "Core problems diagnosed.",
@@ -168,9 +170,12 @@ async def analyze_retention_job(*args, **kwargs):
                             pattern_findings.get("user_segments", [])
                             if isinstance(pattern_findings, dict) else []
                         ),
+                        "top_segments": state.get("top_segments", []),
+                        "driver_features": driver_features,
                         "total_patterns_identified": diagnosis.get("total_patterns_identified", 0),
                         "competitors": q.get("competitors", []),
                         "churn_destination": q.get("churn_destination", ""),
+                        "competitor_research": diagnosis.get("competitor_research", {}),
                     }
                 })
 
@@ -192,9 +197,16 @@ async def analyze_retention_job(*args, **kwargs):
                                 "p10": imp.get("percentile_10", 0),
                                 "mean": imp.get("mean_lift", 0),
                                 "p90": imp.get("percentile_90", 0),
+                                "lift_prior_anchor": imp.get("lift_prior_anchor"),
+                                "lift_prior_pct": imp.get("lift_prior_pct"),
+                                "lift_prior_citations": imp.get("lift_prior_citations", []),
                             }
                             for imp in simulations.get("intervention_impacts", [])
                         ],
+                        "rag_anchored_count": (
+                            simulations.get("simulation_summary", {}).get("rag_anchored_count", 0)
+                        ),
+                        "strategy_skeptic": state.get("strategy_skeptic_output", {}),
                     }
                 })
 
@@ -204,6 +216,7 @@ async def analyze_retention_job(*args, **kwargs):
                     "message": "Final playbook generated.",
                     "data": {
                         "final_playbook": state.get("final_playbook"),
+                        "evidence_dossier": state.get("evidence_dossier", []),
                     }
                 })
                 

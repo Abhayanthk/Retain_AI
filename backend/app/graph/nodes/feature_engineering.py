@@ -106,37 +106,61 @@ def feature_engineering_node(state: RetentionGraphState) -> dict:
                     # CoxPH requires a single dataframe combining features, duration, and event.
                     cph = CoxPHFitter(penalizer=0.1) # Add small penalizer for convergence stability
                     cph.fit(df_ml, duration_col=tenure_col, event_col=churn_col)
-                    
+
                     # Predict for active users (where churn == 0)
                     active_users = df_ml[df_ml[churn_col] == 0]
                     if not active_users.empty:
                         # Extract the features for prediction
                         X_active = active_users[features]
-                        
+
                         # Predict median survival time for active users
                         # If a user's risk is so low they outlive the model, it returns inf.
                         median_survival_times = cph.predict_median(X_active)
-                        
+
                         # A user is "high risk" if their expected remaining median survival time is < 6 periods
                         current_tenures = active_users[tenure_col]
                         expected_remaining_time = median_survival_times - current_tenures
-                        
+
                         # Count those whose expected remaining time is very low (< 6 units)
                         high_risk_indices = np.where(expected_remaining_time < 6)[0]
                         high_risk_count = int(len(high_risk_indices))
-                        
+
                         # Identify the lowest predicted survival time
                         # Ignore -inf or inf
                         valid_remaining = expected_remaining_time[np.isfinite(expected_remaining_time)]
                         lowest_remaining_time = float(np.min(valid_remaining)) if len(valid_remaining) > 0 else 999.0
-                        
+
+                        # Extract per-feature hazard ratios — the strongest driver signal CoxPH provides.
+                        # exp(coef) > 1 means the feature increases churn hazard; < 1 means it protects.
+                        try:
+                            summary_df = cph.summary.copy()
+                            summary_df["abs_log_hr"] = np.abs(summary_df["coef"])
+                            summary_df = summary_df.sort_values("abs_log_hr", ascending=False)
+                            driver_features = []
+                            for feat_name, row in summary_df.head(5).iterrows():
+                                hr = float(row.get("exp(coef)", np.exp(row.get("coef", 0))))
+                                p_val = float(row.get("p", 1.0))
+                                coef_val = float(row.get("coef", 0))
+                                direction = "raises_churn" if coef_val > 0 else "protects"
+                                driver_features.append({
+                                    "feature": str(feat_name),
+                                    "hazard_ratio": round(hr, 3),
+                                    "coef": round(coef_val, 3),
+                                    "p_value": round(p_val, 4),
+                                    "direction": direction,
+                                    "significant": p_val < 0.05,
+                                })
+                        except Exception:
+                            driver_features = []
+
                         feature_store["predictive_churn_risk"] = {
                             "model_applied": "CoxProportionalHazards",
                             "total_active_evaluated": len(active_users),
                             "high_risk_customers_count": high_risk_count,
                             "lowest_forecasted_survival_time": round(lowest_remaining_time, 1),
                             "risk_segment_pct": round(high_risk_count / len(active_users), 3) if len(active_users) > 0 else 0.0,
-                            "concordance_index": round(cph.concordance_index_, 3)
+                            "concordance_index": round(cph.concordance_index_, 3),
+                            "driver_features": driver_features,
                         }
         except Exception as e:
             feature_store["predictive_churn_risk"] = {"error": f"Model failed to train: {str(e)}"}

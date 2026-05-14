@@ -49,12 +49,15 @@ from app.graph.nodes import (
     # Discovery parallel nodes
     forensic_detective_node,
     pattern_matcher_node,
+    competitor_research_node,
     diagnosis_merge_node,
     # Execution parallel nodes
     unit_economist_node,
     jtbd_specialist_node,
     growth_hacker_node,
     strategy_merge_node,
+    strategy_skeptic_node,
+    evidence_dossier_node,
 )
 
 
@@ -78,6 +81,7 @@ def build_retention_graph() -> StateGraph:
     # Discovery Agent nodes (parallel)
     graph.add_node("forensic_detective", forensic_detective_node)
     graph.add_node("pattern_matcher", pattern_matcher_node)
+    graph.add_node("competitor_research", competitor_research_node)
     graph.add_node("diagnosis_merge", diagnosis_merge_node)
 
     graph.add_node("hypothesis_validation", hypothesis_validation_node)
@@ -89,9 +93,11 @@ def build_retention_graph() -> StateGraph:
     graph.add_node("jtbd_specialist", jtbd_specialist_node)
     graph.add_node("growth_hacker", growth_hacker_node)
     graph.add_node("strategy_merge", strategy_merge_node)
+    graph.add_node("strategy_skeptic", strategy_skeptic_node)
 
     graph.add_node("simulation", simulation_node)
     graph.add_node("strategy_critic", strategy_critic_node)
+    graph.add_node("evidence_dossier", evidence_dossier_node)
     graph.add_node("execution_architect", execution_architect_node)
 
     # ── Entry point ──────────────────────────────────────────────────
@@ -124,13 +130,15 @@ def build_retention_graph() -> StateGraph:
     graph.add_edge("feature_engineering", "behavioral_map")
 
     # ── Discovery Pod: Fan-out (parallel) ────────────────────────────
-    # behavioral_map fans out to forensic_detective AND pattern_matcher
+    # behavioral_map fans out to forensic_detective, pattern_matcher, competitor_research
     graph.add_edge("behavioral_map", "forensic_detective")
     graph.add_edge("behavioral_map", "pattern_matcher")
+    graph.add_edge("behavioral_map", "competitor_research")
 
-    # Both fan-in to diagnosis_merge
+    # All three fan-in to diagnosis_merge
     graph.add_edge("forensic_detective", "diagnosis_merge")
     graph.add_edge("pattern_matcher", "diagnosis_merge")
+    graph.add_edge("competitor_research", "diagnosis_merge")
 
     # Diagnosis merge → hypothesis validation
     graph.add_edge("diagnosis_merge", "hypothesis_validation")
@@ -159,21 +167,23 @@ def build_retention_graph() -> StateGraph:
     graph.add_edge("jtbd_specialist", "strategy_merge")
     graph.add_edge("growth_hacker", "strategy_merge")
 
-    # Strategy merge → simulation → critic
-    graph.add_edge("strategy_merge", "simulation")
+    # Strategy merge → skeptic → simulation → critic
+    graph.add_edge("strategy_merge", "strategy_skeptic")
+    graph.add_edge("strategy_skeptic", "simulation")
     graph.add_edge("simulation", "strategy_critic")
 
-    # Node 11 → conditional: approved vs low-lift vs failure
+    # Node 11 → conditional: approved/exhausted → evidence_dossier; else loop back
     graph.add_conditional_edges(
         "strategy_critic",
         route_after_strategy_critic,
         {
-            "execution_architect": "execution_architect",
+            "evidence_dossier": "evidence_dossier",
             "adaptive_hitl": "adaptive_hitl",
         },
     )
 
-    # Node 12 → END
+    # Node 11b → Node 12 → END
+    graph.add_edge("evidence_dossier", "execution_architect")
     graph.add_edge("execution_architect", END)
 
     # ── Compile ──────────────────────────────────────────────────────

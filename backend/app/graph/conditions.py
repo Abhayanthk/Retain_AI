@@ -46,7 +46,10 @@ def route_after_retry(
 
 
 # ── After Hypothesis Validation ──────────────────────────────────────
-MAX_DISCOVERY_ATTEMPTS = 0
+# Counts discovery attempts (diagnosis_merge increments once per pass).
+# Value 2 = up to 2 discovery passes total = 1 retry if hypothesis_validation
+# is not yet "verified" after the first pass.
+MAX_DISCOVERY_ATTEMPTS = 2
 
 
 def route_after_hypothesis_validation(
@@ -66,26 +69,28 @@ def route_after_hypothesis_validation(
 
 
 # ── After Strategy Critic ────────────────────────────────────────────
-MAX_CRITIC_ITERATIONS = 0
+# Counts critic passes (strategy_critic increments iteration_count once per pass).
+# Value 2 = up to 2 critic passes total = 1 retry after the first review.
+MAX_CRITIC_ITERATIONS = 2
 
 
 def route_after_strategy_critic(
     state: RetentionGraphState,
-) -> Literal["execution_architect", "adaptive_hitl"]:
+) -> Literal["evidence_dossier", "adaptive_hitl"]:
     """
-    Approved                → proceed to Execution Architect.
+    Approved                → proceed to Evidence Dossier → Execution Architect.
     Low Lift / Violation    → loop back to Strategy Agents (fan-out via adaptive_hitl).
-    Max iterations reached  → proceed with current data to Execution Architect.
+    Max iterations reached  → proceed with current data to Evidence Dossier.
     """
     verdict = state.get("critic_verdict", "")
     iterations = state.get("iteration_count", 0)
 
     if verdict == "approved":
-        return "execution_architect"
+        return "evidence_dossier"
 
     # Max retries exhausted — proceed with best available data
     if iterations >= MAX_CRITIC_ITERATIONS:
-        return "execution_architect"
+        return "evidence_dossier"
 
     # Otherwise retry strategy generation
     return "adaptive_hitl"

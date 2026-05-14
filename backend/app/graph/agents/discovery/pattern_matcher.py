@@ -48,6 +48,7 @@ def run_pattern_matcher(state: RetentionGraphState) -> dict[str, Any]:
         feature_store = state.get("feature_store", {})
         behavior_cohorts = state.get("behavior_cohorts", [])
         q = state.get("questionnaire", {})
+        driver_features = (feature_store.get("predictive_churn_risk", {}) or {}).get("driver_features", []) or []
 
         llm = get_llm("gemini", temperature=0.2)
 
@@ -61,12 +62,23 @@ Business context:
 Behavior Cohorts: {cohorts}
 Feature Store Data: {features}
 
+CoxPH Hazard Drivers (use feature names below as anchors for patterns and segment definitions):
+{drivers}
+
 Identify:
-1. High-risk user segments — bias toward the priority segment if signals match.
-2. Feature-based patterns (specific feature adoption gaps).
-3. Common churn sequences (steps users take before leaving).
+1. High-risk user segments — bias toward the priority segment if signals match. Each segment_id should reference the actual data driver (e.g. "low_integration_b2b" not "Segment A").
+2. Feature-based patterns (specific feature adoption gaps tied to hazard ratios above).
+3. Common churn sequences (steps users take before leaving), ordered.
 4. pattern_confidence in [0, 1]."""
         )
+
+        if driver_features:
+            drivers_str = "\n".join(
+                f"- {d['feature']}: HR={d['hazard_ratio']} ({d['direction']}, p={d['p_value']})"
+                for d in driver_features
+            )
+        else:
+            drivers_str = "(no quantitative drivers — reason from cohorts alone)"
 
         import json
         response = safe_llm_invoke(
@@ -77,6 +89,7 @@ Identify:
                 typical_customer=q.get("typical_customer", "Unspecified"),
                 cohorts=json.dumps(behavior_cohorts),
                 features=json.dumps(feature_store),
+                drivers=drivers_str,
             ),
             agent_name="PatternMatcher",
         )
