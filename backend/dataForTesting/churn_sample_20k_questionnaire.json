@@ -1,0 +1,75 @@
+{
+  "_meta": {
+    "csv": "backend/dataForTesting/churn_sample_20k.csv",
+    "rows": 20000,
+    "source": "Kaggle muhammadshahidazeem/customer-churn-dataset (training split, 440k → 20k stratified random, seed=42)",
+    "observed_distributions": {
+      "overall_churn_rate": 0.569,
+      "churn_by_plan_tier": {"Basic": 0.586, "Standard": 0.568, "Premium": 0.552},
+      "churn_by_contract_length": {"Monthly": 1.000, "Quarterly": 0.457, "Annual": 0.463},
+      "tenure_months": {"min": 1, "median": 32, "max": 60},
+      "support_calls_per_customer": {"min": 0, "median": 3, "max": 10},
+      "usage_frequency": {"min": 1, "median": 16, "max": 30}
+    },
+    "auto_detected_columns": {
+      "tenure": "Tenure",
+      "usage": "Usage Frequency",
+      "support": "Support Calls",
+      "plan": "Plan Tier",
+      "churn": "Churn"
+    },
+    "what_this_should_exercise": [
+      "F1 CoxPH drivers — strong signals: Contract Length (Monthly=100% churn), Support Calls, Tenure, Payment Delay",
+      "F2 stat panel — churn_by_plan_tier + churn_by_support_volume + churn_by_usage_decile + tenure buckets all populated",
+      "F3 self-consistency — 3 Gemini runs at temps 0.2/0.5/0.7 vote on causes",
+      "F4 per-cause RAG — query expansion for each suspected cause",
+      "F5 top_segments — Basic plan + Monthly contract should dominate",
+      "F9 strategy_skeptic — adversarial review of strategies",
+      "F10 RAG-anchored simulation — lift priors from retention frameworks",
+      "F11 evidence_dossier — stat → cause → tactic chain",
+      "F12 two-pass architect — reasoning_trace populated",
+      "F13 HyDE — hypothetical answer for 'first 90 days' segment",
+      "F14 competitor_research — fires because churn_destination = HubSpot is in KNOWN_COMPETITORS"
+    ]
+  },
+  "questionnaire": {
+    "business_context": "Subscription-based digital service with three plan tiers (Basic / Standard / Premium) and three contract cadences (Monthly / Quarterly / Annual). Customers self-onboard, billing is automated, support is mixed CSM + self-serve. We've grown to ~440k customers historically and currently retain a working sample of ~20k for diagnostic analysis.",
+    "industry": "",
+    "size": "",
+    "business_model": "B2C SaaS",
+    "company_stage": "Growth (Series B)",
+    "revenue_model": "Monthly subscription",
+    "time_range": "",
+    "product_lines": [
+      "Content library",
+      "Weekly digest",
+      "Mobile sync",
+      "Premium offline mode",
+      "Account analytics dashboard"
+    ],
+    "market_segment": "Working professionals aged 28-48, primarily individual subscribers and small teams, evaluating value monthly and quick to cancel after a single bad billing cycle or support friction event.",
+    "budget": "",
+    "legal_constraints": [],
+    "churn_definition": "Inactivity (30 days)",
+    "competitors": ["HubSpot", "Mailchimp", "ConvertKit"],
+    "top_channels": ["Paid social", "Organic search", "Referral"],
+    "support_model": "Mixed (CSM + self-serve)",
+    "goal": "Reduce churn rate",
+    "target_churn_rate": null,
+    "priority_segment": "Newest customers (first 90 days)",
+    "edge_cases": [
+      "Monthly contract subscribers are churning at near-100% — we suspect this is partly definitional (the dataset labels them all churn=1 once their contract ends) but want strategies that still treat short-cadence subscribers as a real cohort."
+    ],
+    "pricing_flexibility": ["Can offer discounts", "Can change plan tiers"],
+    "can_ship_changes": "Yes",
+    "has_completion_point": "No",
+    "churn_destination": "HubSpot",
+    "retention_tactics": [
+      "Onboarding email sequence",
+      "NPS surveys",
+      "Win-back campaigns"
+    ],
+    "timeline": "90-day plan",
+    "typical_customer": "Working professionals aged 28-48, primarily individual subscribers and small teams, evaluating value monthly and quick to cancel after a single bad billing cycle or support friction event."
+  }
+}

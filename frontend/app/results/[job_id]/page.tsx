@@ -238,13 +238,23 @@ function getBadge(action: string, ctx: Ctx): { kind: "eng" | "have" | "price" | 
 
 /* ─── Pipeline state ───────────────────────────────────────── */
 const PIPELINE_STEPS = [
-  { id: "signal",    label: "Signal",    color: "amber",   key: "risk_ready" },
-  { id: "patterns",  label: "Patterns",  color: "blue",    key: "churn_profile_ready" },
-  { id: "diagnosis", label: "Diagnosis", color: "purple",  key: "diagnosis_ready" },
-  { id: "clarify",   label: "Clarify",   color: "violet",  key: "hitl_questions_ready" },
-  { id: "simulate",  label: "Simulate",  color: "teal",    key: "simulation_ready" },
-  { id: "strategy",  label: "Strategy",  color: "emerald", key: "solution_ready" },
+  { id: "signal",    label: "Signal",    color: "amber",   key: "risk_ready",            typical: "~3s"      },
+  { id: "patterns",  label: "Patterns",  color: "blue",    key: "churn_profile_ready",   typical: "~5s"      },
+  { id: "diagnosis", label: "Diagnosis", color: "purple",  key: "diagnosis_ready",       typical: "~25–40s"  },
+  { id: "clarify",   label: "Clarify",   color: "violet",  key: "hitl_questions_ready",  typical: "human"    },
+  { id: "simulate",  label: "Simulate",  color: "teal",    key: "simulation_ready",      typical: "~4s"      },
+  { id: "strategy",  label: "Strategy",  color: "emerald", key: "solution_ready",        typical: "~30–60s · +retry" },
 ];
+
+/* ─── Time formatting ───────────────────────────────────────── */
+function fmtElapsed(ms: number): string {
+  if (ms < 0 || !Number.isFinite(ms)) return "0s";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s - m * 60;
+  return `${m}m ${r.toString().padStart(2, "0")}s`;
+}
 
 function derivePipelineState(stages: Record<string, any>, hitlSubmitted: boolean, complete: boolean): Record<string, "done" | "active" | "pending"> {
   const out: Record<string, "done" | "active" | "pending"> = {};
@@ -281,10 +291,25 @@ function ContextChip({ k, v, why }: { k: string; v: string; why: React.ReactNode
   );
 }
 
-function Sidebar({ pipelineState, jobId, ctx, onRefine, onRerun }: {
+function Sidebar({
+  pipelineState, jobId, ctx, onRefine, onRerun,
+  stageStartTs, stageEndTs, now, forensicProgress, retryInfo,
+}: {
   pipelineState: Record<string, string>; jobId: string; ctx: Ctx;
   onRefine: () => void; onRerun: () => void;
+  stageStartTs: Record<string, number>;
+  stageEndTs: Record<string, number>;
+  now: number;
+  forensicProgress: { run: number; total: number; status: string } | null;
+  retryInfo: { iteration: number; max: number; verdict: string; reason: string; weakPoints: number } | null;
 }) {
+  const stageTime = (id: string): string | null => {
+    const start = stageStartTs[id];
+    if (start === undefined) return null;
+    const end = stageEndTs[id];
+    const ms = (end ?? now) - start;
+    return fmtElapsed(ms);
+  };
   const chips = [
     { k: "Goal",      v: ctx.goal.split(" ").slice(0, 3).join(" "), why: <>Drives selection of <em>retention-focused</em> playbooks. Filters out off-goal interventions.</> },
     { k: "Segment",   v: ctx.segment.length > 18 ? ctx.segment.slice(0, 16) + "…" : ctx.segment, why: <>Diagnosis and roadmap focus on the <em>{ctx.segment}</em> cohort.</> },
@@ -307,12 +332,103 @@ function Sidebar({ pipelineState, jobId, ctx, onRefine, onRerun }: {
         {PIPELINE_STEPS.map((s) => {
           const status = pipelineState[s.id] || "pending";
           const cls = `pipe-row ${status} ${status === "active" ? s.color + "-active" : ""}`;
+          const t = stageTime(s.id);
+          const showSubsteps =
+            s.id === "diagnosis" && status === "active" && forensicProgress !== null;
+          const showRetry =
+            (s.id === "strategy" || s.id === "simulate") && retryInfo !== null;
           return (
             <div key={s.id} className={cls}>
-              <span className="pipe-dot"></span>
-              <span className="pipe-label">{s.label}</span>
-              {status === "done" && <span className="pipe-check">✓</span>}
-              {status === "active" && <span className="pipe-meta">running…</span>}
+              {/* Inner column flex — preserves existing .pipe-row coloring while
+                  letting us stack a sub-row of typical/substeps/retry below.   */}
+              <div className="flex w-full flex-col gap-[3px]">
+                <div className="flex items-center gap-2.5 min-h-[18px]">
+                  <span className="pipe-dot" />
+                  <span className="pipe-label">{s.label}</span>
+                  <span className="ml-auto inline-flex items-center gap-2">
+                    {status === "active" && t && (
+                      <span className="tnum text-[11px] font-medium tracking-normal text-[var(--text)] opacity-90">
+                        {t}
+                      </span>
+                    )}
+                    {status === "done" && t && (
+                      <span className="tnum text-[10px] tracking-normal text-[var(--text-zinc)]">
+                        {t}
+                      </span>
+                    )}
+                    {status === "done" && <span className="pipe-check">✓</span>}
+                  </span>
+                </div>
+
+                <div className="pl-[18px] min-h-[12px] flex items-center gap-2.5 flex-wrap">
+                  {(status === "active" || status === "pending") && (
+                    <span
+                      className={[
+                        "text-[9px] uppercase tracking-[0.08em] font-medium tnum",
+                        status === "pending"
+                          ? "text-[rgba(82,82,91,0.55)]"
+                          : "text-[var(--text-dim)]",
+                      ].join(" ")}
+                    >
+                      {s.typical}
+                    </span>
+                  )}
+
+                  {showSubsteps && forensicProgress && (
+                    <span
+                      className="inline-flex items-center gap-1.5 pl-2 border-l border-[var(--border)]"
+                      aria-label={`forensic run ${forensicProgress.run} of ${forensicProgress.total}`}
+                    >
+                      {Array.from({ length: forensicProgress.total }).map((_, i) => {
+                        const idx = i + 1;
+                        const filled =
+                          idx < forensicProgress.run ||
+                          (idx === forensicProgress.run && forensicProgress.status === "completed");
+                        const active =
+                          idx === forensicProgress.run && forensicProgress.status === "started";
+                        return (
+                          <span
+                            key={i}
+                            aria-hidden="true"
+                            className={[
+                              "w-1.5 h-1.5 rounded-full border transition-all duration-300",
+                              filled
+                                ? "bg-[var(--purple)] border-[var(--purple)] shadow-[0_0_6px_rgba(168,85,247,0.45)]"
+                                : "bg-[rgba(168,85,247,0.16)] border-[rgba(168,85,247,0.32)]",
+                              active ? "animate-pulse" : "",
+                            ].join(" ")}
+                          />
+                        );
+                      })}
+                      <span className="text-[9px] uppercase tracking-[0.06em] font-semibold text-[var(--purple)] ml-0.5">
+                        run {forensicProgress.run}/{forensicProgress.total}
+                      </span>
+                    </span>
+                  )}
+
+                  {showRetry && retryInfo && (
+                    <span
+                      className={[
+                        "inline-flex items-center gap-1.5 px-2 py-[2px] rounded-full",
+                        "text-[9px] font-semibold uppercase tracking-[0.1em] whitespace-nowrap border",
+                        retryInfo.verdict === "violation"
+                          ? "border-[rgba(239,68,68,0.42)] bg-[rgba(239,68,68,0.07)] text-[var(--red)]"
+                          : "border-[rgba(245,158,11,0.4)] bg-[rgba(245,158,11,0.08)] text-[var(--amber)]",
+                      ].join(" ")}
+                    >
+                      <span className="inline-block text-[11px] animate-spin [animation-direction:reverse] [animation-duration:2.4s]">
+                        ↻
+                      </span>
+                      retry {Math.min(retryInfo.iteration + 1, retryInfo.max)}/{retryInfo.max}
+                      {retryInfo.weakPoints > 0 && (
+                        <span className="tnum text-[9px] opacity-85 tracking-[0.02em]">
+                          · {retryInfo.weakPoints} weak pts
+                        </span>
+                      )}
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
           );
         })}
@@ -1350,6 +1466,18 @@ export default function ResultsPage() {
   const [ctx, setCtx] = useState<Ctx>(() => buildCtx({}));
   const [evidenceOpenIdx, setEvidenceOpenIdx] = useState<number | null>(null);
 
+  // Streaming UX state — visibility into "how long" + "is it stuck" + "did it retry"
+  const [jobStartTs, setJobStartTs] = useState<number | null>(null);
+  const [stageStartTs, setStageStartTs] = useState<Record<string, number>>({});
+  const [stageEndTs, setStageEndTs] = useState<Record<string, number>>({});
+  const [now, setNow] = useState<number>(() => Date.now());
+  const [forensicProgress, setForensicProgress] = useState<{
+    run: number; total: number; status: "started" | "completed" | "failed";
+  } | null>(null);
+  const [retryInfo, setRetryInfo] = useState<{
+    iteration: number; max: number; verdict: string; reason: string; weakPoints: number;
+  } | null>(null);
+
   useEffect(() => {
     try {
       const raw = sessionStorage.getItem("latest_form_payload");
@@ -1377,6 +1505,35 @@ export default function ResultsPage() {
     sse.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data);
+
+        // Seed the job timer on the first event we see.
+        setJobStartTs((prev) => prev ?? Date.now());
+
+        // Interim progress events — don't store in stagesData since they're not stages.
+        if (event.type === "forensic_progress") {
+          setForensicProgress({
+            run: event.data?.run ?? 0,
+            total: event.data?.total ?? 3,
+            status: event.data?.status ?? "started",
+          });
+          return;
+        }
+        if (event.type === "critic_retry_started") {
+          const info = {
+            iteration: Number(event.data?.iteration ?? 1),
+            max: Number(event.data?.max ?? 2),
+            verdict: String(event.data?.verdict ?? "low_lift"),
+            reason: String(event.data?.reason ?? ""),
+            weakPoints: Number(event.data?.weak_points_count ?? 0),
+          };
+          setRetryInfo(info);
+          const summary = info.verdict === "violation"
+            ? `Critic flagged constraint violations — agents revising (pass ${info.iteration + 1}/${info.max})`
+            : `Critic flagged low lift — agents revising (${info.weakPoints} weak points)`;
+          toast(summary, { icon: "↻", duration: 6000 });
+          return;
+        }
+
         setStagesData((prev) => {
           const updated = { ...prev, [event.type]: event.data };
           sessionStorage.setItem(`job_${jobId}`, JSON.stringify({
@@ -1397,6 +1554,13 @@ export default function ResultsPage() {
     return () => { sse.close(); sseRef.current = null; };
   }, [jobId]);
 
+  /* Streaming UX — live tick while job runs, freezes once complete. */
+  useEffect(() => {
+    if (connectionStatus === "complete") return;
+    const id = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(id);
+  }, [connectionStatus]);
+
   /* Derived */
   const risk: RiskData | null = stagesData.risk_ready ?? null;
   const churn: ChurnProfile | null = stagesData.churn_profile_ready ?? null;
@@ -1410,6 +1574,27 @@ export default function ResultsPage() {
     () => derivePipelineState(stagesData, hitlSubmitted, complete),
     [stagesData, hitlSubmitted, complete]
   );
+
+  /* Streaming UX — stamp each stage's first "active" + first "done" exactly once. */
+  useEffect(() => {
+    const ts = Date.now();
+    let startChanged = false;
+    const nextStart: Record<string, number> = { ...stageStartTs };
+    let endChanged = false;
+    const nextEnd: Record<string, number> = { ...stageEndTs };
+    for (const s of PIPELINE_STEPS) {
+      const status = pipelineState[s.id];
+      if ((status === "active" || status === "done") && nextStart[s.id] === undefined) {
+        nextStart[s.id] = ts; startChanged = true;
+      }
+      if (status === "done" && nextEnd[s.id] === undefined) {
+        nextEnd[s.id] = ts; endChanged = true;
+      }
+    }
+    if (startChanged) setStageStartTs(nextStart);
+    if (endChanged) setStageEndTs(nextEnd);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pipelineState]);
 
   /* Actions */
   const handleHitlSubmit = async (answers: string[]) => {
@@ -1458,7 +1643,18 @@ export default function ResultsPage() {
   return (
     <div className="retain-shell">
       <div className={`app ${hitlOpen ? "pipeline-paused" : ""}`}>
-        <Sidebar pipelineState={pipelineState} jobId={jobId} ctx={ctx} onRefine={handleRefine} onRerun={handleRerun} />
+        <Sidebar
+          pipelineState={pipelineState}
+          jobId={jobId}
+          ctx={ctx}
+          onRefine={handleRefine}
+          onRerun={handleRerun}
+          stageStartTs={stageStartTs}
+          stageEndTs={stageEndTs}
+          now={now}
+          forensicProgress={forensicProgress}
+          retryInfo={retryInfo}
+        />
 
         <main className="main">
           <div className="status-bar">
@@ -1467,6 +1663,15 @@ export default function ResultsPage() {
               <span>{statusText(pipelineState, hitlOpen, complete)}</span>
             </div>
             <div className="status-right">
+              {jobStartTs !== null && (
+                <span
+                  className="tnum inline-flex items-center gap-1.5 pl-3 text-[11px] font-medium text-[var(--text-muted)] border-l border-[var(--border)]"
+                  title="total job elapsed"
+                >
+                  <span className="text-[11px] opacity-50" aria-hidden="true">⏱</span>
+                  {fmtElapsed((complete && stageEndTs.strategy ? stageEndTs.strategy : now) - jobStartTs)}
+                </span>
+              )}
               <span style={{ fontSize: 11, color: "var(--text-zinc)", letterSpacing: "0.04em", textTransform: "uppercase" }}>
                 SSE · {completedCount} / 6 events
               </span>

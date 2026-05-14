@@ -17,6 +17,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from app.graph.state import RetentionGraphState
 from app.rag.store import retrieve as rag_retrieve
 from app.rag.hyde import hypothetical_segment_answer
+from app.graph.stream_utils import push_progress
 
 
 # Self-consistency: run the candidate-cause prompt this many times, at these temps.
@@ -188,8 +189,13 @@ def _bucket_churn(df, col, churn_col, buckets):
     return out
 
 
-def run_forensic_detective(state: RetentionGraphState) -> dict[str, Any]:
-    """Deep forensic investigation of retention patterns."""
+def run_forensic_detective(state: RetentionGraphState, job_id: str | None = None) -> dict[str, Any]:
+    """Deep forensic investigation of retention patterns.
+
+    `job_id` is optional — when present, interim `forensic_progress` SSE events
+    are emitted between self-consistency runs so the UI can show "run 2/3 done"
+    instead of a 30s frozen-looking stage.
+    """
     try:
         import duckdb
 
@@ -417,7 +423,11 @@ Requirements:
         # Free-tier safe — Gemini round-robin in get_llm handles rate limits.
         runs: List[DetectiveResult] = []
         run_errors: List[str] = []
-        for t in SELF_CONSISTENCY_TEMPS:
+        total_runs = len(SELF_CONSISTENCY_TEMPS)
+        for idx, t in enumerate(SELF_CONSISTENCY_TEMPS, start=1):
+            push_progress(job_id, "forensic_progress", {
+                "run": idx, "total": total_runs, "temp": t, "status": "started",
+            })
             try:
                 llm_t = get_llm("gemini", temperature=t)
                 resp = safe_llm_invoke(
@@ -425,8 +435,16 @@ Requirements:
                     agent_name=f"ForensicDetective(t={t})",
                 )
                 runs.append(resp)
+                push_progress(job_id, "forensic_progress", {
+                    "run": idx, "total": total_runs, "temp": t,
+                    "status": "completed", "causes_found": len(resp.suspected_causes),
+                })
             except Exception as run_err:
                 run_errors.append(f"temp={t}: {run_err}")
+                push_progress(job_id, "forensic_progress", {
+                    "run": idx, "total": total_runs, "temp": t,
+                    "status": "failed", "error": str(run_err)[:120],
+                })
 
         if not runs:
             raise RuntimeError(

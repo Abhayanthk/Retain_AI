@@ -12,10 +12,14 @@ import json
 from pydantic import BaseModel, Field
 from typing import List, Literal
 
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableConfig
+
 from app.graph.state import RetentionGraphState
 from app.graph.utils import safe_llm_invoke
+from app.graph.stream_utils import push_progress
+from app.graph.conditions import MAX_CRITIC_ITERATIONS
 from app.config import get_llm
-from langchain_core.prompts import ChatPromptTemplate
 
 class CriticEvaluation(BaseModel):
     quality_score: float = Field(description="Score from 0.0 to 1.0 reflecting strategy quality")
@@ -28,8 +32,9 @@ class CriticEvaluation(BaseModel):
     verdict_reason: str
 
 
-def strategy_critic_node(state: RetentionGraphState) -> dict:
+def strategy_critic_node(state: RetentionGraphState, config: RunnableConfig) -> dict:
     """Senior-partner-level review of the proposed strategy using LLM."""
+    job_id = (config.get("configurable") or {}).get("job_id") if config else None
     try:
         merged_strategies = state.get("strategy_outputs", {}).get("merged_strategies", [])
         lift_percent = state.get("lift_percent", 0)
@@ -174,6 +179,23 @@ quality_score in [0, 1]. constraint_violations is an integer count."""
             "skeptic_high_severity_count": len(skeptic_high_severity),
             "skeptic_robustness": round(skeptic_robustness, 3),
         }
+
+        # If the verdict will trigger a retry AND we still have budget, surface that
+        # to the UI now — otherwise the strategy stage looks frozen for ~30-60s
+        # while three Groq agents re-run silently.
+        will_retry = (
+            critic_verdict != "approved"
+            and iteration_count < MAX_CRITIC_ITERATIONS
+        )
+        if will_retry:
+            push_progress(job_id, "critic_retry_started", {
+                "iteration": iteration_count,
+                "max": MAX_CRITIC_ITERATIONS,
+                "verdict": critic_verdict,
+                "reason": feedback[:240] if feedback else "",
+                "weak_points_count": len(criticism.get("weaknesses", []) or []),
+                "skeptic_flags": criticism.get("skeptic_high_severity_count", 0),
+            })
 
         return {
             "critic_verdict": critic_verdict,
