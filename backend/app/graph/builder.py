@@ -25,6 +25,12 @@ Flow:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+import sys
+import time
+import traceback
+
 from langgraph.graph import StateGraph, END
 
 from app.graph.state import RetentionGraphState
@@ -61,6 +67,50 @@ from app.graph.nodes import (
 )
 
 
+try:
+    import resource as _resource
+
+    def _rss_mb() -> float:
+        # Linux: ru_maxrss is in kilobytes. macOS: bytes. Render is Linux.
+        val = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+        return val / 1024.0 if sys.platform.startswith("linux") else val / (1024.0 * 1024.0)
+except Exception:
+    def _rss_mb() -> float:
+        return -1.0
+
+
+def _wrap_node(name: str, fn):
+    """Log entry, exit duration, RSS, and any exception for a node."""
+    is_async = inspect.iscoroutinefunction(fn)
+
+    if is_async:
+        async def _wrapped(state, *args, **kwargs):
+            t0 = time.time()
+            print(f"[NODE→] {name} start | rss={_rss_mb():.0f}MB", flush=True)
+            try:
+                result = await fn(state, *args, **kwargs)
+                print(f"[NODE✓] {name} done in {time.time() - t0:.1f}s | rss={_rss_mb():.0f}MB", flush=True)
+                return result
+            except Exception as e:
+                print(f"[NODE✗] {name} FAILED after {time.time() - t0:.1f}s: {type(e).__name__}: {e}", flush=True, file=sys.stderr)
+                traceback.print_exc()
+                raise
+        return _wrapped
+
+    def _wrapped_sync(state, *args, **kwargs):
+        t0 = time.time()
+        print(f"[NODE→] {name} start | rss={_rss_mb():.0f}MB", flush=True)
+        try:
+            result = fn(state, *args, **kwargs)
+            print(f"[NODE✓] {name} done in {time.time() - t0:.1f}s | rss={_rss_mb():.0f}MB", flush=True)
+            return result
+        except Exception as e:
+            print(f"[NODE✗] {name} FAILED after {time.time() - t0:.1f}s: {type(e).__name__}: {e}", flush=True, file=sys.stderr)
+            traceback.print_exc()
+            raise
+    return _wrapped_sync
+
+
 def build_retention_graph() -> StateGraph:
     """
     Construct and compile the full retention analysis graph.
@@ -71,34 +121,37 @@ def build_retention_graph() -> StateGraph:
     """
     graph = StateGraph(RetentionGraphState)
 
-    # ── Register all nodes ───────────────────────────────────────────
-    graph.add_node("input_ingest", input_ingest_node)
-    graph.add_node("data_audit", data_audit_node)
-    graph.add_node("retry_handler", retry_handler_node)
-    graph.add_node("feature_engineering", feature_engineering_node)
-    graph.add_node("behavioral_map", behavioral_map_node)
+    # ── Register all nodes (wrapped with entry/exit/RSS logging) ─────
+    def _add(name, fn):
+        graph.add_node(name, _wrap_node(name, fn))
+
+    _add("input_ingest", input_ingest_node)
+    _add("data_audit", data_audit_node)
+    _add("retry_handler", retry_handler_node)
+    _add("feature_engineering", feature_engineering_node)
+    _add("behavioral_map", behavioral_map_node)
 
     # Discovery Agent nodes (parallel)
-    graph.add_node("forensic_detective", forensic_detective_node)
-    graph.add_node("pattern_matcher", pattern_matcher_node)
-    graph.add_node("competitor_research", competitor_research_node)
-    graph.add_node("diagnosis_merge", diagnosis_merge_node)
+    _add("forensic_detective", forensic_detective_node)
+    _add("pattern_matcher", pattern_matcher_node)
+    _add("competitor_research", competitor_research_node)
+    _add("diagnosis_merge", diagnosis_merge_node)
 
-    graph.add_node("hypothesis_validation", hypothesis_validation_node)
-    graph.add_node("constraint_add", constraint_add_node)
-    graph.add_node("adaptive_hitl", adaptive_hitl_node)
+    _add("hypothesis_validation", hypothesis_validation_node)
+    _add("constraint_add", constraint_add_node)
+    _add("adaptive_hitl", adaptive_hitl_node)
 
     # Execution Agent nodes (parallel)
-    graph.add_node("unit_economist", unit_economist_node)
-    graph.add_node("jtbd_specialist", jtbd_specialist_node)
-    graph.add_node("growth_hacker", growth_hacker_node)
-    graph.add_node("strategy_merge", strategy_merge_node)
-    graph.add_node("strategy_skeptic", strategy_skeptic_node)
+    _add("unit_economist", unit_economist_node)
+    _add("jtbd_specialist", jtbd_specialist_node)
+    _add("growth_hacker", growth_hacker_node)
+    _add("strategy_merge", strategy_merge_node)
+    _add("strategy_skeptic", strategy_skeptic_node)
 
-    graph.add_node("simulation", simulation_node)
-    graph.add_node("strategy_critic", strategy_critic_node)
-    graph.add_node("evidence_dossier", evidence_dossier_node)
-    graph.add_node("execution_architect", execution_architect_node)
+    _add("simulation", simulation_node)
+    _add("strategy_critic", strategy_critic_node)
+    _add("evidence_dossier", evidence_dossier_node)
+    _add("execution_architect", execution_architect_node)
 
     # ── Entry point ──────────────────────────────────────────────────
     graph.set_entry_point("input_ingest")
