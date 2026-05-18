@@ -152,19 +152,49 @@ export default function FormPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const total = STEPS.length;
 
-  // Load saved state if available
+  // Load saved state if available. If the landing page primed a demo run
+  // (demo_csv_url present), also fetch the bundled CSV and attach it as a
+  // File so the user doesn't need to re-upload.
   useEffect(() => {
-    const saved = sessionStorage.getItem("latest_form_state");
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        // Note: csvFile cannot be serialized, so it will be null and user must re-upload
-        setForm({ ...parsed, csvFile: null });
-        setMaxStep(STEPS.length - 1);
-      } catch (err) {
-        console.error("Failed to load saved form state", err);
+    let cancelled = false;
+    const hydrate = async () => {
+      const saved = sessionStorage.getItem("latest_form_state");
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          setForm({ ...parsed, csvFile: null });
+          setMaxStep(STEPS.length - 1);
+        } catch (err) {
+          console.error("Failed to load saved form state", err);
+        }
       }
-    }
+
+      const demoUrl = sessionStorage.getItem("demo_csv_url");
+      const demoName = sessionStorage.getItem("demo_csv_name") || "demo.csv";
+      if (demoUrl) {
+        try {
+          const res = await fetch(demoUrl);
+          if (!res.ok) throw new Error(`fetch ${demoUrl} ${res.status}`);
+          const blob = await res.blob();
+          const file = new File([blob], demoName, { type: "text/csv" });
+          if (!cancelled) {
+            setForm((p) => ({ ...p, csvFile: file }));
+            setMaxStep(STEPS.length - 1);
+          }
+        } catch (err) {
+          console.error("Demo CSV hydrate failed:", err);
+        } finally {
+          // Single-shot: clear so a user navigating back to the form
+          // organically doesn't get auto-filled forever.
+          sessionStorage.removeItem("demo_csv_url");
+          sessionStorage.removeItem("demo_csv_name");
+        }
+      }
+    };
+    hydrate();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const set = useCallback(<K extends keyof FormData>(k: K, v: FormData[K]) => setForm((p) => ({ ...p, [k]: v })), []);

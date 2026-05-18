@@ -1,11 +1,66 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Sparkles, Shield, Zap } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ArrowRight, Sparkles, Shield, Zap, PlayCircle } from "lucide-react";
 
+// Demo defaults — pre-fill the questionnaire so a one-click demo runs the full
+// pipeline against the bundled 300-row churn dataset. Values mirror the
+// shape FormData in app/form/page.tsx; sessionStorage key matches the one
+// the form reads on mount (`latest_form_state`).
+const DEMO_FORM_STATE = {
+  businessContext:
+    "Subscription-based digital service with three plan tiers (Basic / Standard / Premium) and three contract cadences (Monthly / Quarterly / Annual). Customers self-onboard, billing is automated, support is mixed CSM + self-serve. We've grown to ~440k customers historically and currently retain a working sample of 300 for diagnostic analysis.",
+  csvFile: null,
+  churnDefinition: "Inactivity",
+  churnDefinitionOther: "",
+  churnInactivityDays: "30",
+  businessModel: "B2C SaaS",
+  typicalCustomer:
+    "Working professionals aged 28-48, primarily individual subscribers and small teams, evaluating value monthly and quick to cancel after a single bad billing cycle or support friction event.",
+  companyStage: "Growth (Series B)",
+  revenueModel: "Monthly subscription",
+  pricingFlexibility: ["Can offer discounts", "Can change plan tiers"],
+  coreFeatures:
+    "Content library, Weekly digest, Mobile sync, Premium offline mode, Account analytics dashboard",
+  canShipChanges: "Yes",
+  hasCompletionPoint: "No",
+  topChannels: ["Paid social", "Organic search", "Referral"],
+  topCompetitors: "HubSpot, Mailchimp, ConvertKit",
+  churnDestination: "HubSpot",
+  supportModel: "Mixed (CSM + self-serve)",
+  retentionTactics: ["Onboarding email sequence", "NPS surveys", "Win-back campaigns"],
+  prioritySegment: "Newest customers (first 90 days)",
+  prioritySegmentOther: "",
+  topGoal: "Reduce churn rate",
+  timeline: "90-day plan",
+  anythingElse:
+    "Monthly contract subscribers are churning at near-100% — we suspect this is partly definitional (the dataset labels them all churn=1 once their contract ends) but want strategies that still treat short-cadence subscribers as a real cohort.",
+};
 
 export default function HomePage() {
+  const router = useRouter();
+  const [demoLoading, setDemoLoading] = useState(false);
+
+  // Fetch the bundled demo CSV from /public, attach it to a synthetic File via
+  // an indirection (sessionStorage carries the URL; form re-fetches on mount
+  // and constructs a File before upload). File objects can't be serialized
+  // across navigation, so we pass a flag and a URL instead.
+  const startDemo = async () => {
+    if (demoLoading) return;
+    setDemoLoading(true);
+    try {
+      sessionStorage.setItem("latest_form_state", JSON.stringify(DEMO_FORM_STATE));
+      sessionStorage.setItem("demo_csv_url", "/churn_demo_300.csv");
+      sessionStorage.setItem("demo_csv_name", "churn_demo_300.csv");
+      router.push("/form");
+    } catch (err) {
+      console.error("Demo init failed:", err);
+      setDemoLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen w-full bg-black relative flex flex-col overflow-hidden">
       {/* ── Layer 1: Colored noise dots ── */}
@@ -121,14 +176,26 @@ export default function HomePage() {
             retention strategies powered by AI. Takes ~4 minutes.
           </p>
 
-          {/* CTA */}
-          <Link
-            href="/form"
-            className="inline-flex items-center gap-2.5 h-12 px-8 rounded-xl bg-[#fafafa] text-[#09090b] text-[15px] font-semibold hover:bg-white transition-all duration-200 shadow-[0_0_40px_rgba(255,255,255,0.06)]"
-          >
-            Get Started
-            <ArrowRight className="w-4.5 h-4.5" />
-          </Link>
+          {/* CTA + Demo */}
+          <div className="inline-flex items-center gap-3">
+            <Link
+              href="/form"
+              className="inline-flex items-center gap-2.5 h-12 px-8 rounded-xl bg-[#fafafa] text-[#09090b] text-[15px] font-semibold hover:bg-white transition-all duration-200 shadow-[0_0_40px_rgba(255,255,255,0.06)]"
+            >
+              Get Started
+              <ArrowRight className="w-4.5 h-4.5" />
+            </Link>
+            <button
+              type="button"
+              onClick={startDemo}
+              disabled={demoLoading}
+              title="Run the full pipeline on a bundled 300-row churn dataset with sensible defaults pre-filled."
+              className="inline-flex items-center gap-2.5 h-12 px-7 rounded-xl bg-transparent text-[#fafafa] text-[15px] font-semibold border border-[rgba(255,255,255,0.15)] hover:bg-[rgba(255,255,255,0.06)] hover:border-[rgba(255,255,255,0.3)] transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              <PlayCircle className="w-4.5 h-4.5" />
+              {demoLoading ? "Loading demo…" : "Try demo"}
+            </button>
+          </div>
 
           {/* trust signals */}
           <div className="flex items-center justify-center gap-8 mt-14">
