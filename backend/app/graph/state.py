@@ -39,6 +39,7 @@ class RetentionGraphState(TypedDict, total=False):
     # ── Input ────────────────────────────────────────────────────────
     raw_csv_path: str
     questionnaire: dict[str, Any]
+    job_id: str  # used by cancellation wrapper in builder.py
 
     # ── Node 1: Input Ingest ─────────────────────────────────────────
     normalized_df: list[dict[str, Any]]   # DataFrame stored as list of row dicts

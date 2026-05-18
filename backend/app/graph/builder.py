@@ -40,6 +40,7 @@ from app.graph.conditions import (
     route_after_hypothesis_validation,
     route_after_strategy_critic,
 )
+from app.shared import is_cancelled, JobCancelled
 from app.graph.nodes import (
     input_ingest_node,
     data_audit_node,
@@ -94,6 +95,11 @@ def _wrap_node(name: str, fn):
     except (TypeError, ValueError):
         accepts_config = False
 
+    def _check_cancel(state):
+        job_id = state.get("job_id") if isinstance(state, dict) else None
+        if is_cancelled(job_id):
+            raise JobCancelled(job_id)
+
     def _log_enter():
         t0 = time.time()
         print(f"[NODE→] {name} start | rss={_rss_mb():.0f}MB", flush=True)
@@ -108,6 +114,7 @@ def _wrap_node(name: str, fn):
 
     if is_async and accepts_config:
         async def _w(state, config):
+            _check_cancel(state)
             t0 = _log_enter()
             try:
                 result = await fn(state, config)
@@ -117,6 +124,7 @@ def _wrap_node(name: str, fn):
         return _w
     if is_async and not accepts_config:
         async def _w(state):
+            _check_cancel(state)
             t0 = _log_enter()
             try:
                 result = await fn(state)
@@ -126,6 +134,7 @@ def _wrap_node(name: str, fn):
         return _w
     if accepts_config:
         def _w(state, config):
+            _check_cancel(state)
             t0 = _log_enter()
             try:
                 result = fn(state, config)
@@ -134,6 +143,7 @@ def _wrap_node(name: str, fn):
                 _log_fail(t0, e); raise
         return _w
     def _w(state):
+        _check_cancel(state)
         t0 = _log_enter()
         try:
             result = fn(state)

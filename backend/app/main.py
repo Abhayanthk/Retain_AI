@@ -32,7 +32,7 @@ if _onnx_cache_target.exists():
             pass
 
 from app.graph.builder import build_retention_graph
-from app.shared import active_streams
+from app.shared import active_streams, JobCancelled
 from typing import Dict, Any
 
 UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "retain_ai_uploads")
@@ -82,16 +82,17 @@ async def analyze_retention_job(*args, **kwargs):
     event_data = getattr(ctx, 'event', None)
     event_data = event_data.data if event_data else {}
     
+    job_id = event_data.get("job_id")
+
     initial_state = {
         "raw_csv_path": event_data.get("raw_csv_path", ""),
         "questionnaire": event_data.get("questionnaire", {}),
+        "job_id": job_id,
         "iteration_count": 0,
         "discovery_attempts": 0,
         "retry_count": 0,
         "errors": [],
     }
-
-    job_id = event_data.get("job_id")
 
     # Define an async runner for the graph to stream updates internally
     async def execute_and_stream():
@@ -99,146 +100,172 @@ async def analyze_retention_job(*args, **kwargs):
         queue = stream["queue"] if stream else None
         final_state = None
 
-        async for state in graph.astream(
-            initial_state,
-            config={"configurable": {"job_id": job_id}},
-            stream_mode="values",
-        ):
-            final_state = state
-            if not queue:
-                continue
-                
-            node = state.get("current_node")
-            
-            if node == "feature_engineering":
-                fs = state.get("feature_store", {})
-                risk = fs.get("predictive_churn_risk", {})
-                has_model = "high_risk_customers_count" in risk and "error" not in risk
+        try:
+            async for state in graph.astream(
+                initial_state,
+                config={"configurable": {"job_id": job_id}},
+                stream_mode="values",
+            ):
+                final_state = state
+                if not queue:
+                    continue
 
-                high_risk = risk.get("high_risk_customers_count", 0)
-                total = risk.get("total_active_evaluated", 0)
-                pct = risk.get("risk_segment_pct", 0)
+                node = state.get("current_node")
 
-                if has_model:
-                    if pct > 0.3:
-                        insight = f"{high_risk} users ({round(pct*100)}%) show high churn probability in the near term"
-                    elif pct > 0.1:
-                        insight = f"A focused segment of {high_risk} users is driving most immediate churn risk"
-                    elif high_risk > 0:
-                        insight = f"{high_risk} users identified with significantly shorter expected lifetime"
+                if node == "feature_engineering":
+                    fs = state.get("feature_store", {})
+                    risk = fs.get("predictive_churn_risk", {})
+                    has_model = "high_risk_customers_count" in risk and "error" not in risk
+
+                    high_risk = risk.get("high_risk_customers_count", 0)
+                    total = risk.get("total_active_evaluated", 0)
+                    pct = risk.get("risk_segment_pct", 0)
+
+                    if has_model:
+                        if pct > 0.3:
+                            insight = f"{high_risk} users ({round(pct*100)}%) show high churn probability in the near term"
+                        elif pct > 0.1:
+                            insight = f"A focused segment of {high_risk} users is driving most immediate churn risk"
+                        elif high_risk > 0:
+                            insight = f"{high_risk} users identified with significantly shorter expected lifetime"
+                        else:
+                            insight = "No immediate high-risk patterns detected — monitoring recommended"
                     else:
-                        insight = "No immediate high-risk patterns detected — monitoring recommended"
-                else:
-                    insight = "Risk model could not be trained — ensure your dataset has churn and tenure columns"
+                        insight = "Risk model could not be trained — ensure your dataset has churn and tenure columns"
 
-                await queue.put({
-                    "type": "risk_ready",
-                    "message": "Risk analysis complete.",
-                    "data": {
-                        "high_risk_count": high_risk,
-                        "total_active": total,
-                        "risk_pct": round(pct * 100, 1),
-                        "confidence": round(risk.get("concordance_index", 0) * 100) if has_model else 0,
-                        "insight": insight,
-                        "has_model": has_model,
-                        "feature_store": {
-                            "ltv_estimates": fs.get("ltv_estimates", {}),
-                            "velocity_metrics": fs.get("velocity_metrics", {}),
-                            "engagement_cohorts": fs.get("engagement_cohorts", {}),
-                            "rfm_scores": fs.get("rfm_scores", {}),
-                        },
-                        "data_quality_score": fs.get("data_quality_score", 0),
-                        "data_quality_logs": fs.get("data_quality_logs", []),
-                        "input_context": state.get("input_context", {}),
-                    }
-                })
+                    await queue.put({
+                        "type": "risk_ready",
+                        "message": "Risk analysis complete.",
+                        "data": {
+                            "high_risk_count": high_risk,
+                            "total_active": total,
+                            "risk_pct": round(pct * 100, 1),
+                            "confidence": round(risk.get("concordance_index", 0) * 100) if has_model else 0,
+                            "insight": insight,
+                            "has_model": has_model,
+                            "feature_store": {
+                                "ltv_estimates": fs.get("ltv_estimates", {}),
+                                "velocity_metrics": fs.get("velocity_metrics", {}),
+                                "engagement_cohorts": fs.get("engagement_cohorts", {}),
+                                "rfm_scores": fs.get("rfm_scores", {}),
+                            },
+                            "data_quality_score": fs.get("data_quality_score", 0),
+                            "data_quality_logs": fs.get("data_quality_logs", []),
+                            "input_context": state.get("input_context", {}),
+                        }
+                    })
 
-            elif node == "behavioral_map":
-                curves = state.get("behavior_curves", {})
-                await queue.put({
-                    "type": "churn_profile_ready",
-                    "message": "Churn profile and behavior mapping complete.",
-                    "data": {
-                        "churn_probability": round(curves.get("churn_probability", 0) * 100, 1),
-                        "survival_curve": curves.get("survival_curve", {}),
-                        "max_tenure": curves.get("max_tenure", 0),
-                        "median_survival_time": curves.get("median_survival_time"),
-                        "milestone_retention": curves.get("milestone_retention", {}),
-                        "behavior_cohorts": state.get("behavior_cohorts", []),
-                    }
-                })
+                elif node == "behavioral_map":
+                    curves = state.get("behavior_curves", {})
+                    await queue.put({
+                        "type": "churn_profile_ready",
+                        "message": "Churn profile and behavior mapping complete.",
+                        "data": {
+                            "churn_probability": round(curves.get("churn_probability", 0) * 100, 1),
+                            "survival_curve": curves.get("survival_curve", {}),
+                            "max_tenure": curves.get("max_tenure", 0),
+                            "median_survival_time": curves.get("median_survival_time"),
+                            "milestone_retention": curves.get("milestone_retention", {}),
+                            "behavior_cohorts": state.get("behavior_cohorts", []),
+                        }
+                    })
 
-            elif node == "diagnosis_merge":
-                diagnosis = state.get("diagnosis_results", {})
-                pattern_findings = state.get("pattern_findings", {})
-                q = state.get("questionnaire", {})
-                fs = state.get("feature_store", {}) or {}
-                driver_features = (fs.get("predictive_churn_risk", {}) or {}).get("driver_features", []) or []
-                await queue.put({
-                    "type": "diagnosis_ready",
-                    "message": "Core problems diagnosed.",
-                    "data": {
-                        "merged_hypotheses": diagnosis.get("merged_hypotheses", []),
-                        "forensic_findings": diagnosis.get("forensic_findings", []),
-                        "pattern_findings": diagnosis.get("pattern_findings", []),
-                        "skeptic_findings": diagnosis.get("skeptic_findings", []),
-                        "user_segments": (
-                            pattern_findings.get("user_segments", [])
-                            if isinstance(pattern_findings, dict) else []
-                        ),
-                        "top_segments": state.get("top_segments", []),
-                        "driver_features": driver_features,
-                        "total_patterns_identified": diagnosis.get("total_patterns_identified", 0),
-                        "competitors": q.get("competitors", []),
-                        "churn_destination": q.get("churn_destination", ""),
-                        "competitor_research": diagnosis.get("competitor_research", {}),
-                    }
-                })
+                elif node == "diagnosis_merge":
+                    diagnosis = state.get("diagnosis_results", {})
+                    pattern_findings = state.get("pattern_findings", {})
+                    q = state.get("questionnaire", {})
+                    fs = state.get("feature_store", {}) or {}
+                    driver_features = (fs.get("predictive_churn_risk", {}) or {}).get("driver_features", []) or []
+                    await queue.put({
+                        "type": "diagnosis_ready",
+                        "message": "Core problems diagnosed.",
+                        "data": {
+                            "merged_hypotheses": diagnosis.get("merged_hypotheses", []),
+                            "forensic_findings": diagnosis.get("forensic_findings", []),
+                            "pattern_findings": diagnosis.get("pattern_findings", []),
+                            "skeptic_findings": diagnosis.get("skeptic_findings", []),
+                            "user_segments": (
+                                pattern_findings.get("user_segments", [])
+                                if isinstance(pattern_findings, dict) else []
+                            ),
+                            "top_segments": state.get("top_segments", []),
+                            "driver_features": driver_features,
+                            "total_patterns_identified": diagnosis.get("total_patterns_identified", 0),
+                            "competitors": q.get("competitors", []),
+                            "churn_destination": q.get("churn_destination", ""),
+                            "competitor_research": diagnosis.get("competitor_research", {}),
+                        }
+                    })
 
-            elif node == "simulation":
-                simulations = state.get("simulations", {})
-                ci = simulations.get("confidence_interval_5_95", [])
-                await queue.put({
-                    "type": "simulation_ready",
-                    "message": "Monte Carlo simulation complete.",
-                    "data": {
-                        "expected_lift": simulations.get("expected_lift", 0),
-                        "confidence_low": ci[0] if len(ci) > 0 else 0,
-                        "confidence_high": ci[1] if len(ci) > 1 else 0,
-                        "expected_roi": simulations.get("expected_roi", 0),
-                        "iterations": simulations.get("iterations", 0),
-                        "interventions": [
-                            {
-                                "name": imp.get("intervention", ""),
-                                "p10": imp.get("percentile_10", 0),
-                                "mean": imp.get("mean_lift", 0),
-                                "p90": imp.get("percentile_90", 0),
-                                "lift_prior_anchor": imp.get("lift_prior_anchor"),
-                                "lift_prior_pct": imp.get("lift_prior_pct"),
-                                "lift_prior_citations": imp.get("lift_prior_citations", []),
-                            }
-                            for imp in simulations.get("intervention_impacts", [])
-                        ],
-                        "rag_anchored_count": (
-                            simulations.get("simulation_summary", {}).get("rag_anchored_count", 0)
-                        ),
-                        "strategy_skeptic": state.get("strategy_skeptic_output", {}),
-                    }
-                })
+                elif node == "simulation":
+                    simulations = state.get("simulations", {})
+                    ci = simulations.get("confidence_interval_5_95", [])
+                    await queue.put({
+                        "type": "simulation_ready",
+                        "message": "Monte Carlo simulation complete.",
+                        "data": {
+                            "expected_lift": simulations.get("expected_lift", 0),
+                            "confidence_low": ci[0] if len(ci) > 0 else 0,
+                            "confidence_high": ci[1] if len(ci) > 1 else 0,
+                            "expected_roi": simulations.get("expected_roi", 0),
+                            "iterations": simulations.get("iterations", 0),
+                            "interventions": [
+                                {
+                                    "name": imp.get("intervention", ""),
+                                    "p10": imp.get("percentile_10", 0),
+                                    "mean": imp.get("mean_lift", 0),
+                                    "p90": imp.get("percentile_90", 0),
+                                    "lift_prior_anchor": imp.get("lift_prior_anchor"),
+                                    "lift_prior_pct": imp.get("lift_prior_pct"),
+                                    "lift_prior_citations": imp.get("lift_prior_citations", []),
+                                }
+                                for imp in simulations.get("intervention_impacts", [])
+                            ],
+                            "rag_anchored_count": (
+                                simulations.get("simulation_summary", {}).get("rag_anchored_count", 0)
+                            ),
+                            "strategy_skeptic": state.get("strategy_skeptic_output", {}),
+                        }
+                    })
 
-            elif node == "execution_architect":
+                elif node == "execution_architect":
+                    await queue.put({
+                        "type": "solution_ready",
+                        "message": "Final playbook generated.",
+                        "data": {
+                            "final_playbook": state.get("final_playbook"),
+                            "evidence_dossier": state.get("evidence_dossier", []),
+                        }
+                    })
+
+            if queue:
+                await queue.put({"type": "complete", "message": "Analysis finished.", "data": {}})
+        except JobCancelled as e:
+            print(f"[CANCEL] job {job_id} cancelled mid-pipeline", flush=True)
+            if queue:
                 await queue.put({
-                    "type": "solution_ready",
-                    "message": "Final playbook generated.",
-                    "data": {
-                        "final_playbook": state.get("final_playbook"),
-                        "evidence_dossier": state.get("evidence_dossier", []),
-                    }
+                    "type": "cancelled",
+                    "message": "Analysis cancelled by user.",
+                    "data": {"job_id": job_id},
                 })
-                
-        if queue:
-            await queue.put({"type": "complete", "message": "Analysis finished.", "data": {}})
-            
+                await queue.put({"type": "complete", "message": "Cancelled.", "data": {}})
+            return _sanitize(final_state)
+        except Exception as e:
+            print(f"[ERROR] pipeline failed for job {job_id}: {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
+            if queue:
+                await queue.put({
+                    "type": "error",
+                    "message": "Analysis failed.",
+                    "data": {
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                        "last_node": (final_state or {}).get("current_node"),
+                    },
+                })
+                await queue.put({"type": "complete", "message": "Failed.", "data": {}})
+            raise
+
         return _sanitize(final_state)
 
     try:
@@ -290,6 +317,7 @@ async def run_analysis(
             "queue": asyncio.Queue(),
             "hitl_event": asyncio.Event(),
             "hitl_answers": {},
+            "cancelled": False,
         }
         req_body["job_id"] = job_id
         
@@ -325,14 +353,36 @@ async def stream_job(job_id: str, request: Request):
 
                 yield f"data: {json.dumps(event)}\n\n"
 
-                if event["type"] == "complete":
-                    active_streams.pop(job_id, None)
+                # Terminate stream on completion, cancellation, or error.
+                # `error` and `cancelled` are followed by a `complete` event from
+                # the pipeline worker; treating any of them as terminal here
+                # ensures the SSE closes even if the worker crashed before
+                # emitting `complete`.
+                if event["type"] in ("complete", "cancelled", "error"):
+                    if event["type"] == "complete":
+                        active_streams.pop(job_id, None)
                     break
         except Exception:
             pass
         # Do NOT pop on disconnect — queue must survive reconnects until complete
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.post("/analyze/{job_id}/cancel")
+async def cancel_job(job_id: str):
+    """Signal the running pipeline to stop. Wrapper in builder.py checks the
+    `cancelled` flag before every node and raises `JobCancelled`; the worker
+    catches that and pushes a `cancelled` SSE event then `complete`."""
+    stream = active_streams.get(job_id)
+    if not stream:
+        raise HTTPException(status_code=404, detail="Job not found or already completed")
+    stream["cancelled"] = True
+    # Unblock any HITL wait so the cancellation can propagate immediately.
+    hitl_event = stream.get("hitl_event")
+    if hitl_event:
+        hitl_event.set()
+    print(f"[CANCEL] flagged job {job_id}", flush=True)
+    return {"status": "ok", "job_id": job_id, "cancelled": True}
 
 @app.post("/analyze/{job_id}/respond")
 async def submit_hitl_response(job_id: str, body: Dict[str, Any] = Body(...)):

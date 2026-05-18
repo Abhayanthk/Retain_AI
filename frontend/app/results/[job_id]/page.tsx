@@ -1458,7 +1458,9 @@ export default function ResultsPage() {
   const router = useRouter();
   const jobId = params.job_id as string;
 
-  const [connectionStatus, setConnectionStatus] = useState<"connecting" | "connected" | "complete" | "error">("connecting");
+  const [connectionStatus, setConnectionStatus] = useState<"connecting" | "connected" | "complete" | "error" | "cancelled">("connecting");
+  const [errorInfo, setErrorInfo] = useState<{ type?: string; message?: string; lastNode?: string } | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [stagesData, setStagesData] = useState<Record<string, any>>({});
   const [isRerunning, setIsRerunning] = useState(false);
   const [hitlSubmitted, setHitlSubmitted] = useState(false);
@@ -1534,6 +1536,25 @@ export default function ResultsPage() {
           return;
         }
 
+        if (event.type === "cancelled") {
+          setConnectionStatus("cancelled");
+          toast("Analysis cancelled.", { icon: "■", duration: 4000 });
+          sse.close(); sseRef.current = null;
+          return;
+        }
+
+        if (event.type === "error") {
+          setErrorInfo({
+            type: event.data?.error_type,
+            message: event.data?.error_message,
+            lastNode: event.data?.last_node,
+          });
+          setConnectionStatus("error");
+          toast.error(`Analysis failed at ${event.data?.last_node || "unknown stage"}.`, { duration: 8000 });
+          sse.close(); sseRef.current = null;
+          return;
+        }
+
         setStagesData((prev) => {
           const updated = { ...prev, [event.type]: event.data };
           sessionStorage.setItem(`job_${jobId}`, JSON.stringify({
@@ -1545,11 +1566,18 @@ export default function ResultsPage() {
         if (event.type === "complete") { setConnectionStatus("complete"); sse.close(); sseRef.current = null; }
       } catch (err) { console.error("SSE parse error:", err); }
     };
-    // Don't close on error — EventSource auto-reconnects; only mark error after repeated failures
+    // EventSource auto-reconnects on transient drops; only mark error after
+    // repeated failures so users see a clear "Connection lost" state instead
+    // of an indefinite spinner.
     let errorCount = 0;
     sse.onerror = () => {
       errorCount++;
-      if (errorCount >= 5) { sse.close(); sseRef.current = null; setConnectionStatus("error"); }
+      if (errorCount >= 5) {
+        sse.close();
+        sseRef.current = null;
+        setErrorInfo({ type: "ConnectionLost", message: "Lost connection to backend after multiple retries." });
+        setConnectionStatus("error");
+      }
     };
     return () => { sse.close(); sseRef.current = null; };
   }, [jobId]);
@@ -1624,6 +1652,25 @@ export default function ResultsPage() {
   };
 
   const handleRefine = () => router.push("/form");
+  const handleCancel = async () => {
+    if (isCancelling || connectionStatus === "complete" || connectionStatus === "cancelled") return;
+    if (!confirm("Cancel this analysis? In-flight work will be discarded.")) return;
+    setIsCancelling(true);
+    try {
+      const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const res = await fetch(`${API_BASE}/analyze/${jobId}/cancel`, { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Backend pushes a `cancelled` SSE event; UI updates from that handler.
+      // If SSE already dropped, force-set state here so user gets feedback.
+      setTimeout(() => {
+        setConnectionStatus((prev) => (prev === "cancelled" || prev === "complete") ? prev : "cancelled");
+        setIsCancelling(false);
+      }, 3000);
+    } catch (err) {
+      toast.error("Failed to cancel analysis. Check backend connectivity.");
+      setIsCancelling(false);
+    }
+  };
   const handleRerun = async () => {
     const payloadStr = sessionStorage.getItem("latest_form_payload");
     if (!payloadStr) return toast.error("No previous form data found to rerun.");
@@ -1675,11 +1722,48 @@ export default function ResultsPage() {
               <span style={{ fontSize: 11, color: "var(--text-zinc)", letterSpacing: "0.04em", textTransform: "uppercase" }}>
                 SSE · {completedCount} / 6 events
               </span>
+              {!complete && connectionStatus !== "cancelled" && connectionStatus !== "error" && (
+                <button
+                  className="status-btn status-btn--danger"
+                  onClick={handleCancel}
+                  disabled={isCancelling}
+                  title="Cancel the running analysis"
+                >
+                  {isCancelling ? "■ Cancelling…" : "■ Cancel"}
+                </button>
+              )}
               <button className="status-btn" onClick={handleRerun} disabled={isRerunning}>
                 {isRerunning ? "↻ Running…" : "↻ Rerun"}
               </button>
             </div>
           </div>
+
+          {(connectionStatus === "error" || connectionStatus === "cancelled") && (
+            <div
+              className={`analysis-status-banner analysis-status-banner--${connectionStatus}`}
+              role="alert"
+            >
+              <span className="banner-dot" aria-hidden="true"></span>
+              <div className="banner-body">
+                <strong className="banner-title">
+                  {connectionStatus === "cancelled" ? "Analysis cancelled" : "Analysis failed"}
+                </strong>
+                {connectionStatus === "error" && errorInfo && (
+                  <span className="banner-detail">
+                    {errorInfo.lastNode ? `at ${errorInfo.lastNode}` : null}
+                    {errorInfo.type ? ` · ${errorInfo.type}` : null}
+                    {errorInfo.message ? ` · ${errorInfo.message}` : null}
+                  </span>
+                )}
+                {connectionStatus === "cancelled" && (
+                  <span className="banner-detail">Pipeline stopped at your request.</span>
+                )}
+              </div>
+              <button className="status-btn" onClick={handleRerun} disabled={isRerunning}>
+                {isRerunning ? "↻ Running…" : "↻ Retry"}
+              </button>
+            </div>
+          )}
 
           <div className="main-inner">
             <div className="page-head">
