@@ -189,12 +189,41 @@
 .sidebar-bottom { margin-top: auto; display: flex; gap: 6px; padding-top: 12px; border-top: 1px solid var(--border); }
 
 /* Churn Profile */
-.churn-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; }
-.churn-prob { padding: 20px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; }
+/* Churn-grid stretches both cards by default (grid behaviour) which leaves
+   a big dead zone under the slider whenever the milestone card is taller.
+   Top-align instead and let the churn card grow naturally with its own
+   content (KM sparkline + summary stats). */
+.churn-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; align-items: start; }
+.churn-prob { padding: 20px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; }
 .churn-prob-num { font-size: 44px; font-weight: 700; letter-spacing: -0.03em; line-height: 1; color: var(--text); }
 .churn-prob-num small { font-size: 14px; font-weight: 500; color: var(--text-zinc); margin-left: 8px; }
 .churn-prob-lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--blue); margin-bottom: 10px; }
 .slider-wrap { margin-top: 18px; }
+
+/* Inline KM survival sparkline sits below the slider — gives the card real
+   visual weight and turns "abstract slider value" into a curve readers can
+   reason about. The vertical dashed line + dot pins the current month. */
+.km-sparkline {
+  display: block;
+  width: 100%;
+  height: 72px;
+  margin: 18px 0 14px;
+}
+
+/* Compact summary stats row pinned to the bottom of the card. */
+.churn-prob-stats {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 0;
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.cps-stat { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.cps-label { font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-zinc); }
+.cps-val { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.cps-divider { width: 1px; background: var(--border); margin: 0 14px; }
 .slider { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; border-radius: 999px; background: rgba(255,255,255,0.08); outline: none; cursor: pointer; }
 .slider::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--blue); border: 2px solid var(--bg); cursor: grab; transition: transform 0.1s ease; }
 .slider::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--blue); border: 2px solid var(--bg); cursor: grab; }
@@ -203,22 +232,57 @@
 .milestone { padding: 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; }
 .milestone-lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-zinc); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .milestone-flat-note { font-size: 10px; font-weight: 500; letter-spacing: 0.04em; text-transform: none; color: var(--text-muted); cursor: help; }
-.milestone-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 6px; }
+/* Milestone grid auto-fits to the actual milestone count so we never show
+   empty trailing cells when the backend returns 4, 5, 7, 8 milestones. The
+   data-driven candidate set (behavioral_map.py) can yield any count from
+   2 to ~9 depending on observed tenure range. */
+.milestone-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(74px, 1fr)); gap: 6px; }
+/* Count-aware overrides so common counts get visually balanced rows. */
+.milestone-grid[data-count="4"]  { grid-template-columns: repeat(4,1fr); }
+.milestone-grid[data-count="5"]  { grid-template-columns: repeat(5,1fr); }
+.milestone-grid[data-count="6"]  { grid-template-columns: repeat(3,1fr); }
+.milestone-grid[data-count="7"]  { grid-template-columns: repeat(4,1fr); }
+.milestone-grid[data-count="8"]  { grid-template-columns: repeat(4,1fr); }
+.milestone-grid[data-count="9"]  { grid-template-columns: repeat(3,1fr); }
 .milestone-cell { padding: 10px 6px; background: rgba(255,255,255,0.015); border: 1px solid var(--border); border-radius: 6px; text-align: center; }
 .milestone-cell-label { font-size: 10px; color: var(--text-zinc); letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 4px; }
 .milestone-cell-val { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .cohorts { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-top: 12px; }
-.cohort { padding: 14px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; position: relative; }
-.cohort.focus { border-color: rgba(59,130,246,0.55); box-shadow: inset 0 0 0 1px rgba(59,130,246,0.18); }
-.cohort-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.cohort { padding: 14px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; position: relative; overflow: hidden; }
+.cohort.focus { border-color: rgba(168,85,247,0.5); box-shadow: inset 0 0 0 1px rgba(168,85,247,0.15); padding-top: 30px; }
+.cohort-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
 .cohort-name { font-size: 13px; font-weight: 600; }
-.cohort-meta { font-size: 11px; color: var(--text-zinc); letter-spacing: 0.04em; text-transform: uppercase; }
+.cohort-meta { font-size: 11px; color: var(--text-zinc); letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; flex-shrink: 0; }
 .cohort-stats { display: flex; align-items: baseline; gap: 14px; margin-bottom: 10px; }
 .cohort-size { font-size: 22px; font-weight: 700; letter-spacing: -0.025em; font-variant-numeric: tabular-nums; }
 .cohort-retention { font-size: 13px; color: var(--emerald); font-variant-numeric: tabular-nums; }
 .cohort-retention.warn { color: var(--amber); }
 .cohort-desc { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
-.cohort .focus-pill { position: absolute; top: 10px; right: 10px; }
+/* Focus pill: full-width ribbon at top of the card, no overlap with the
+   cohort name/meta row underneath. The cohort-head's padding-top reserves
+   the ribbon's space; no JSX changes needed. */
+.cohort .focus-pill {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  padding: 5px 14px;
+  border-radius: 0;
+  border: 0;
+  background: linear-gradient(90deg, rgba(168,85,247,0.18) 0%, rgba(168,85,247,0.06) 100%);
+  border-bottom: 1px solid rgba(168,85,247,0.35);
+  color: rgba(216,180,254,0.95);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-align: left;
+  width: auto;
+  z-index: 1;
+}
+.cohort .focus-pill::before {
+  content: "▸ ";
+  margin-right: 4px;
+  color: rgba(216,180,254,0.7);
+}
 
 /* Diagnosis */
 .hyp-list { display: flex; flex-direction: column; gap: 8px; }

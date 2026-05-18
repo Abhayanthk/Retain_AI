@@ -6,12 +6,12 @@ import { useRouter } from "next/navigation";
 import { ArrowRight, Sparkles, Shield, Zap, PlayCircle } from "lucide-react";
 
 // Demo defaults — pre-fill the questionnaire so a one-click demo runs the full
-// pipeline against the bundled 1000-row churn dataset. Values mirror the
+// pipeline against the bundled 300-row churn dataset. Values mirror the
 // shape FormData in app/form/page.tsx; sessionStorage key matches the one
 // the form reads on mount (`latest_form_state`).
 const DEMO_FORM_STATE = {
   businessContext:
-    "Subscription-based digital service with three plan tiers (Basic / Standard / Premium) and three contract cadences (Monthly / Quarterly / Annual). Customers self-onboard, billing is automated, support is mixed CSM + self-serve. Working with a balanced sample of 1,000 customers spanning all plan tiers, contract cadences, and tenure buckets — oversampled toward the first-90-day cohort so newcomer churn has real statistical signal.",
+    "Subscription-based digital service with three plan tiers (Basic / Standard / Premium) and three contract cadences (Monthly / Quarterly / Annual). Customers self-onboard, billing is automated, support is mixed CSM + self-serve. Working with a diagnostic sample of 300 customers — stratified across tenure buckets and Plan×Contract cells, oversampled on the first-90-day cohort, and feature-diverse sampled so every CoxPH driver has meaningful variance.",
   csvFile: null,
   churnDefinition: "Inactivity",
   churnDefinitionOther: "",
@@ -52,8 +52,8 @@ export default function HomePage() {
     setDemoLoading(true);
     try {
       sessionStorage.setItem("latest_form_state", JSON.stringify(DEMO_FORM_STATE));
-      sessionStorage.setItem("demo_csv_url", "/churn_demo_1000.csv");
-      sessionStorage.setItem("demo_csv_name", "churn_demo_1000.csv");
+      sessionStorage.setItem("demo_csv_url", "/churn_demo_300.csv");
+      sessionStorage.setItem("demo_csv_name", "churn_demo_300.csv");
       router.push("/form");
     } catch (err) {
       console.error("Demo init failed:", err);

@@ -513,6 +513,54 @@ function SignalSection({ data, ctx, visible }: { data: RiskData; ctx: Ctx; visib
   );
 }
 
+// Inline SVG sparkline of the KM survival curve. No charting lib — keeps
+// bundle slim and renders crisply on any background. Highlights the slider's
+// current month as a vertical guide so the big number above feels anchored
+// to a real point on the curve.
+function SurvivalSparkline({ data, currentMonth }: { data: ChurnProfile; currentMonth: number }) {
+  const W = 320;
+  const H = 72;
+  const PAD_X = 4;
+  const PAD_Y = 6;
+
+  // Prefer the dense survival_curve for shape; fall back to milestone points.
+  const rawPts: [number, number][] = data.survival_curve
+    ? Object.entries(data.survival_curve)
+        .map(([k, v]) => [Number(k.replace(/^month_/, "")), v] as [number, number])
+        .filter(([m, v]) => Number.isFinite(m) && v != null)
+        .sort((a, b) => a[0] - b[0])
+    : parseMilestonePoints(data.milestone_retention);
+
+  if (rawPts.length < 2) return null;
+
+  const maxX = Math.max(rawPts[rawPts.length - 1][0], data.max_tenure || 1);
+  const toX = (m: number) => PAD_X + (m / maxX) * (W - PAD_X * 2);
+  const toY = (r: number) => PAD_Y + (1 - r) * (H - PAD_Y * 2);
+
+  const linePath = rawPts.map(([m, r], i) => `${i === 0 ? "M" : "L"}${toX(m).toFixed(1)},${toY(r).toFixed(1)}`).join(" ");
+  const areaPath = `${linePath} L${toX(rawPts[rawPts.length - 1][0]).toFixed(1)},${(H - PAD_Y).toFixed(1)} L${toX(rawPts[0][0]).toFixed(1)},${(H - PAD_Y).toFixed(1)} Z`;
+  const cx = toX(currentMonth);
+  const cy = toY(interpolateRetention(currentMonth, data.milestone_retention));
+
+  return (
+    <svg className="km-sparkline" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="km-fill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="rgba(59,130,246,0.32)" />
+          <stop offset="100%" stopColor="rgba(59,130,246,0.02)" />
+        </linearGradient>
+      </defs>
+      {[0.25, 0.5, 0.75].map((t) => (
+        <line key={t} x1={PAD_X} y1={PAD_Y + t * (H - PAD_Y * 2)} x2={W - PAD_X} y2={PAD_Y + t * (H - PAD_Y * 2)} stroke="rgba(255,255,255,0.04)" strokeWidth="1" />
+      ))}
+      <path d={areaPath} fill="url(#km-fill)" />
+      <path d={linePath} fill="none" stroke="rgba(96,165,250,0.95)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1={cx} y1={PAD_Y} x2={cx} y2={H - PAD_Y} stroke="rgba(255,255,255,0.18)" strokeWidth="1" strokeDasharray="2 3" />
+      <circle cx={cx} cy={cy} r="3.5" fill="#60a5fa" stroke="rgba(0,0,0,0.55)" strokeWidth="1" />
+    </svg>
+  );
+}
+
 function ChurnProfileSection({ data, ctx, visible }: { data: ChurnProfile; ctx: Ctx; visible: boolean }) {
   const [month, setMonth] = useState(12);
   useEffect(() => { if (data.max_tenure && month === 12 && data.max_tenure < 12) setMonth(data.max_tenure); }, [data.max_tenure]);
@@ -547,6 +595,25 @@ function ChurnProfileSection({ data, ctx, visible }: { data: ChurnProfile; ctx: 
               <span>Month {data.max_tenure}</span>
             </div>
           </div>
+          <SurvivalSparkline data={data} currentMonth={month} />
+          <div className="churn-prob-stats">
+            <div className="cps-stat">
+              <span className="cps-label">Median survival</span>
+              <span className="cps-val tnum">
+                {data.median_survival_time != null ? `mo. ${data.median_survival_time}` : "—"}
+              </span>
+            </div>
+            <div className="cps-divider" />
+            <div className="cps-stat">
+              <span className="cps-label">Observed window</span>
+              <span className="cps-val tnum">1–{data.max_tenure} mo.</span>
+            </div>
+            <div className="cps-divider" />
+            <div className="cps-stat">
+              <span className="cps-label">Final retention</span>
+              <span className="cps-val tnum">{Math.round((1 - data.churn_probability / 100) * 100)}%</span>
+            </div>
+          </div>
         </div>
         <div className="milestone">
           <div className="milestone-lbl">
@@ -560,7 +627,7 @@ function ChurnProfileSection({ data, ctx, visible }: { data: ChurnProfile; ctx: 
               </span>
             )}
           </div>
-          <div className="milestone-grid">
+          <div className="milestone-grid" data-count={milestones.length}>
             {milestones.map((m) => (
               <div key={m.key} className="milestone-cell">
                 <div className="milestone-cell-label">{m.label}</div>
