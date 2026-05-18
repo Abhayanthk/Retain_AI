@@ -1776,6 +1776,8 @@ export default function ResultsPage() {
         body: JSON.stringify({ answers: body }),
       });
       setHitlSubmitted(true);
+      hitlSubmittedRef.current = true;
+      writeSnapshot({ hitlSubmitted: true });
     } finally { setHitlSubmitting(false); }
   };
 
@@ -1788,6 +1790,8 @@ export default function ResultsPage() {
         body: JSON.stringify({ answers: {} }),
       });
       setHitlSubmitted(true);
+      hitlSubmittedRef.current = true;
+      writeSnapshot({ hitlSubmitted: true });
     } finally { setHitlSubmitting(false); }
   };
 
