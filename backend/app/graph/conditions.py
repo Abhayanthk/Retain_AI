@@ -71,8 +71,10 @@ def route_after_hypothesis_validation(
 
 # ── After Strategy Critic ────────────────────────────────────────────
 # Counts critic passes (strategy_critic increments iteration_count once per pass).
-# Value 2 = up to 2 critic passes total = 1 retry after the first review.
-MAX_CRITIC_ITERATIONS = 2
+# Value 1 = single critic pass, no retry. Same RSS-doubling risk as discovery
+# retry on Render free tier — each retry re-runs 3 parallel Groq strategy
+# agents + skeptic + simulation, doubling state size.
+MAX_CRITIC_ITERATIONS = 0
 
 
 def route_after_strategy_critic(
