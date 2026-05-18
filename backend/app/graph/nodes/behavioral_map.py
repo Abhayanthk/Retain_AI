@@ -80,13 +80,53 @@ def behavioral_map_node(state: RetentionGraphState) -> dict:
                     int(round(float(median))) if median is not None and not np.isinf(float(median)) else None
                 )
 
-                # Retention at standard business milestones
+                # Retention at milestones — chosen dynamically from the actual
+                # tenure range so the UI doesn't show a row of identical "66%"
+                # cells for months past the observed data. Three rules:
+                #   1. Milestones must be <= the largest observed tenure.
+                #   2. Candidate set scales with data range (months_5/month if
+                #      we don't have years of history, real targets if we do).
+                #   3. Drop a milestone if the KM value equals the previous
+                #      retained milestone within 0.5 percentage points — flat
+                #      curve = no new information.
+                max_t = float(times[-1])
+
+                if max_t <= 6:
+                    candidate_milestones = [1, 2, 3, 4, 5, 6]
+                elif max_t <= 12:
+                    candidate_milestones = [1, 2, 3, 6, 9, 12]
+                elif max_t <= 24:
+                    candidate_milestones = [1, 3, 6, 9, 12, 18, 24]
+                else:
+                    candidate_milestones = [1, 3, 6, 12, 18, 24, 36]
+
+                # Make sure we always include the max observed point so user
+                # sees the end of the curve.
+                max_observed = int(round(max_t))
+                if max_observed not in candidate_milestones:
+                    candidate_milestones.append(max_observed)
+
                 milestone_retention = {}
-                for m in [1, 3, 6, 12, 24, 36]:
-                    if m <= times[-1]:
-                        idx = max((i for i, t in enumerate(times) if t <= m), default=0)
-                        milestone_retention[f"month_{m}"] = round(km_values[idx], 3)
+                milestone_metadata = {
+                    "max_observed_month": max_observed,
+                    "skipped_flat": [],
+                }
+                last_value = None
+                for m in sorted(set(candidate_milestones)):
+                    if m > max_t:
+                        continue
+                    idx = max((i for i, t in enumerate(times) if t <= m), default=0)
+                    val = round(km_values[idx], 3)
+                    # Skip milestone if KM hasn't moved more than 0.5pp from
+                    # the previous retained value (purely-flat region).
+                    if last_value is not None and abs(val - last_value) < 0.005:
+                        milestone_metadata["skipped_flat"].append(m)
+                        continue
+                    milestone_retention[f"month_{m}"] = val
+                    last_value = val
+
                 behavior_curves["milestone_retention"] = milestone_retention
+                behavior_curves["milestone_metadata"] = milestone_metadata
 
         # Create behavioral cohorts with real retention rates from data
         if tenure_col and tenure_col in df.columns:

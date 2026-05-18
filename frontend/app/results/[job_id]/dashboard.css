@@ -201,7 +201,8 @@
 .slider:active::-webkit-slider-thumb { transform: scale(1.15); }
 .slider-labels { display: flex; justify-content: space-between; margin-top: 8px; font-size: 10px; color: var(--text-zinc); letter-spacing: 0.04em; text-transform: uppercase; }
 .milestone { padding: 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; }
-.milestone-lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-zinc); margin-bottom: 12px; }
+.milestone-lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-zinc); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.milestone-flat-note { font-size: 10px; font-weight: 500; letter-spacing: 0.04em; text-transform: none; color: var(--text-muted); cursor: help; }
 .milestone-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 6px; }
 .milestone-cell { padding: 10px 6px; background: rgba(255,255,255,0.015); border: 1px solid var(--border); border-radius: 6px; text-align: center; }
 .milestone-cell-label { font-size: 10px; color: var(--text-zinc); letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 4px; }

@@ -166,6 +166,7 @@ async def analyze_retention_job(*args, **kwargs):
                             "max_tenure": curves.get("max_tenure", 0),
                             "median_survival_time": curves.get("median_survival_time"),
                             "milestone_retention": curves.get("milestone_retention", {}),
+                            "milestone_metadata": curves.get("milestone_metadata", {}),
                             "behavior_cohorts": state.get("behavior_cohorts", []),
                         }
                     })

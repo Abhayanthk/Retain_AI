@@ -27,6 +27,7 @@ interface ChurnProfile {
   churn_probability: number; max_tenure: number; median_survival_time: number | null;
   milestone_retention: Record<string, number>; behavior_cohorts: Cohort[];
   survival_curve?: Record<string, number>;
+  milestone_metadata?: { max_observed_month: number; skipped_flat: number[] };
 }
 interface EvidenceSource { id: string; source: string; topic: string; score?: number; }
 interface Hypothesis {
@@ -202,11 +203,18 @@ function milestoneColor(r: number) {
   if (r >= 0.5) return { color: "var(--amber)" };
   return { color: "var(--red)" };
 }
+// Parse milestone dict (keys like "month_3") into sorted (month, retention)
+// points. Backend now chooses milestone months dynamically based on the
+// observed tenure range, so we can't rely on a fixed [1,3,6,12,24,36] list.
+function parseMilestonePoints(ms: Record<string, number>): [number, number][] {
+  return Object.entries(ms)
+    .map(([k, v]) => [Number(k.replace(/^month_/, "")), v] as [number, number])
+    .filter(([m, v]) => Number.isFinite(m) && v != null)
+    .sort((a, b) => a[0] - b[0]);
+}
+
 function interpolateRetention(month: number, ms: Record<string, number>) {
-  const pts: [number, number][] = [
-    [1, ms.month_1], [3, ms.month_3], [6, ms.month_6],
-    [12, ms.month_12], [24, ms.month_24], [36, ms.month_36],
-  ].filter(([, v]) => v != null) as [number, number][];
+  const pts = parseMilestonePoints(ms);
   if (!pts.length) return 1;
   if (month <= pts[0][0]) return pts[0][1];
   if (month >= pts[pts.length - 1][0]) return pts[pts.length - 1][1];
@@ -510,14 +518,16 @@ function ChurnProfileSection({ data, ctx, visible }: { data: ChurnProfile; ctx: 
   useEffect(() => { if (data.max_tenure && month === 12 && data.max_tenure < 12) setMonth(data.max_tenure); }, [data.max_tenure]);
   const retention = interpolateRetention(month, data.milestone_retention);
   const churn = (1 - retention) * 100;
-  const milestones = [
-    { key: "month_1",  label: "Mo. 1",  val: data.milestone_retention.month_1 },
-    { key: "month_3",  label: "Mo. 3",  val: data.milestone_retention.month_3 },
-    { key: "month_6",  label: "Mo. 6",  val: data.milestone_retention.month_6 },
-    { key: "month_12", label: "Mo. 12", val: data.milestone_retention.month_12 },
-    { key: "month_24", label: "Mo. 24", val: data.milestone_retention.month_24 },
-    { key: "month_36", label: "Mo. 36", val: data.milestone_retention.month_36 },
-  ].filter(m => m.val != null);
+  // Render whatever milestones the backend chose (dynamic — see
+  // behavioral_map.py `candidate_milestones` block). Flat-region milestones
+  // are dropped server-side so the UI never shows a row of identical %.
+  const milestones = parseMilestonePoints(data.milestone_retention).map(([m, val]) => ({
+    key: `month_${m}`,
+    label: `Mo. ${m}`,
+    val,
+  }));
+  const skippedFlat = data.milestone_metadata?.skipped_flat ?? [];
+  const maxObserved = data.milestone_metadata?.max_observed_month ?? data.max_tenure;
   const focusId = ctx.focusNewUsers ? "low_tenure" : ctx.focusEnterprise ? "high_tenure" : null;
   return (
     <section className={`section ${visible ? "visible" : ""}`}>
@@ -539,7 +549,17 @@ function ChurnProfileSection({ data, ctx, visible }: { data: ChurnProfile; ctx: 
           </div>
         </div>
         <div className="milestone">
-          <div className="milestone-lbl">Milestone retention</div>
+          <div className="milestone-lbl">
+            Milestone retention
+            {skippedFlat.length > 0 && (
+              <span
+                className="milestone-flat-note"
+                title={`Months ${skippedFlat.join(", ")} skipped — KM curve is flat past month ${maxObserved} (no new churn events observed beyond that point).`}
+              >
+                · curve flat past mo. {maxObserved}
+              </span>
+            )}
+          </div>
           <div className="milestone-grid">
             {milestones.map((m) => (
               <div key={m.key} className="milestone-cell">
