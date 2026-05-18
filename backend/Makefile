@@ -26,7 +26,8 @@ prebake-onnx:
 	mkdir -p $$HOME/.cache
 	rm -rf $$HOME/.cache/chroma
 	ln -sfn $(abspath $(ONNX_CACHE_DIR)) $$HOME/.cache/chroma
-	$(PYTHON_BIN) -c "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; ONNXMiniLM_L6_V2()"
+	$(PYTHON_BIN) -c "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; ef = ONNXMiniLM_L6_V2(preferred_providers=['CPUExecutionProvider']); v = ef(['warmup sentence to force model download']); print(f'[prebake] embedded vector dim={len(v[0])}')"
+	@echo "[prebake] cache contents:" && ls -lah $(ONNX_CACHE_DIR) || true
 
 build: install prebake-onnx
 
