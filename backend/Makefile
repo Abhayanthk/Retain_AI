@@ -1,4 +1,4 @@
-.PHONY: dev fastapi inngest install
+.PHONY: dev fastapi inngest install build prebake-onnx
 
 # Default shell
 SHELL := /bin/bash
@@ -10,13 +10,25 @@ UVICORN_BIN := $(PYTHON_VENV)/bin/uvicorn
 APP_MODULE := app.main:app
 PORT ?= 8000
 INNGEST_URL := http://127.0.0.1:$(PORT)/api/inngest
+ONNX_CACHE_DIR := app/rag/onnx_cache
 
 install:
 	python3 -m venv $(PYTHON_VENV)
 	$(PYTHON_VENV)/bin/pip install -r requirements.txt
 	$(PYTHON_BIN) -m app.rag.ingest
 
-build: install
+# Pre-download Chroma's ONNX embedder into a project-dir cache that Render
+# preserves between build and runtime. Symlinks $HOME/.cache/chroma to it so
+# the runtime container reuses the cache instead of re-downloading (~80MB
+# spike that OOM-kills the 512MB free tier).
+prebake-onnx:
+	mkdir -p $(ONNX_CACHE_DIR)
+	mkdir -p $$HOME/.cache
+	rm -rf $$HOME/.cache/chroma
+	ln -sfn $(abspath $(ONNX_CACHE_DIR)) $$HOME/.cache/chroma
+	$(PYTHON_BIN) -c "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; ONNXMiniLM_L6_V2()"
+
+build: install prebake-onnx
 
 fastapi:
 	$(UVICORN_BIN) $(APP_MODULE) --reload --port $(PORT)

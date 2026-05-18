@@ -10,10 +10,26 @@ import asyncio
 import json
 import math
 import os
+import pathlib
 import shutil
 import tempfile
 
 load_dotenv()
+
+# Re-link ONNX model cache into project dir so Render preserves it across cold
+# starts. Chroma's default embedder downloads ~80MB to ~/.cache/chroma at first
+# query; on ephemeral filesystems that download repeats every restart and the
+# spike OOM-kills the process. Build step pre-warms the project-dir cache; this
+# symlink makes runtime Chroma find it.
+_onnx_cache_target = pathlib.Path(__file__).resolve().parent / "rag" / "onnx_cache"
+if _onnx_cache_target.exists():
+    _onnx_cache_link = pathlib.Path.home() / ".cache" / "chroma"
+    if not _onnx_cache_link.exists():
+        _onnx_cache_link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            _onnx_cache_link.symlink_to(_onnx_cache_target)
+        except OSError:
+            pass
 
 from app.graph.builder import build_retention_graph
 from app.shared import active_streams
@@ -239,6 +255,10 @@ graph = build_retention_graph()
 @app.get("/")
 async def root():
     return {"message": "Retain AI Backend running"}
+
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
