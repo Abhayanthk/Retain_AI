@@ -80,35 +80,67 @@ except Exception:
 
 
 def _wrap_node(name: str, fn):
-    """Log entry, exit duration, RSS, and any exception for a node."""
+    """Log entry, exit duration, RSS, and any exception for a node.
+
+    Mirrors the underlying node's arity so LangGraph signature-inspection still
+    decides correctly whether to pass `config`. A `(state, *args, **kwargs)`
+    wrapper would look like a 1-arg node to LangGraph and config would be
+    dropped, breaking nodes that declare `(state, config)`.
+    """
     is_async = inspect.iscoroutinefunction(fn)
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+        accepts_config = len(params) >= 2
+    except (TypeError, ValueError):
+        accepts_config = False
 
-    if is_async:
-        async def _wrapped(state, *args, **kwargs):
-            t0 = time.time()
-            print(f"[NODE→] {name} start | rss={_rss_mb():.0f}MB", flush=True)
-            try:
-                result = await fn(state, *args, **kwargs)
-                print(f"[NODE✓] {name} done in {time.time() - t0:.1f}s | rss={_rss_mb():.0f}MB", flush=True)
-                return result
-            except Exception as e:
-                print(f"[NODE✗] {name} FAILED after {time.time() - t0:.1f}s: {type(e).__name__}: {e}", flush=True, file=sys.stderr)
-                traceback.print_exc()
-                raise
-        return _wrapped
-
-    def _wrapped_sync(state, *args, **kwargs):
+    def _log_enter():
         t0 = time.time()
         print(f"[NODE→] {name} start | rss={_rss_mb():.0f}MB", flush=True)
+        return t0
+
+    def _log_exit(t0):
+        print(f"[NODE✓] {name} done in {time.time() - t0:.1f}s | rss={_rss_mb():.0f}MB", flush=True)
+
+    def _log_fail(t0, e):
+        print(f"[NODE✗] {name} FAILED after {time.time() - t0:.1f}s: {type(e).__name__}: {e}", flush=True, file=sys.stderr)
+        traceback.print_exc()
+
+    if is_async and accepts_config:
+        async def _w(state, config):
+            t0 = _log_enter()
+            try:
+                result = await fn(state, config)
+                _log_exit(t0); return result
+            except Exception as e:
+                _log_fail(t0, e); raise
+        return _w
+    if is_async and not accepts_config:
+        async def _w(state):
+            t0 = _log_enter()
+            try:
+                result = await fn(state)
+                _log_exit(t0); return result
+            except Exception as e:
+                _log_fail(t0, e); raise
+        return _w
+    if accepts_config:
+        def _w(state, config):
+            t0 = _log_enter()
+            try:
+                result = fn(state, config)
+                _log_exit(t0); return result
+            except Exception as e:
+                _log_fail(t0, e); raise
+        return _w
+    def _w(state):
+        t0 = _log_enter()
         try:
-            result = fn(state, *args, **kwargs)
-            print(f"[NODE✓] {name} done in {time.time() - t0:.1f}s | rss={_rss_mb():.0f}MB", flush=True)
-            return result
+            result = fn(state)
+            _log_exit(t0); return result
         except Exception as e:
-            print(f"[NODE✗] {name} FAILED after {time.time() - t0:.1f}s: {type(e).__name__}: {e}", flush=True, file=sys.stderr)
-            traceback.print_exc()
-            raise
-    return _wrapped_sync
+            _log_fail(t0, e); raise
+    return _w
 
 
 def build_retention_graph() -> StateGraph:
