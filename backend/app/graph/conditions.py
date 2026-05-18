@@ -47,9 +47,10 @@ def route_after_retry(
 
 # ── After Hypothesis Validation ──────────────────────────────────────
 # Counts discovery attempts (diagnosis_merge increments once per pass).
-# Value 2 = up to 2 discovery passes total = 1 retry if hypothesis_validation
-# is not yet "verified" after the first pass.
-MAX_DISCOVERY_ATTEMPTS = 2
+# Value 1 = single discovery pass, no retry. Retry doubled RSS on Render
+# free tier (326MB → 539MB, past 512MB cap) because state accumulates both
+# passes' forensic outputs. Raise to 2 only on larger instances.
+MAX_DISCOVERY_ATTEMPTS = 0
 
 
 def route_after_hypothesis_validation(
