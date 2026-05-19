@@ -73,7 +73,7 @@ class UnitEconomistResult(BaseModel):
     top_intervention: StrictTopInterventionUE
     additional_interventions: List[AdditionalInterventionUE] = Field(default_factory=list)
     roi_projections: Dict[str, ROIProjection]
-    cac_ltv_impact: Dict[str, CACLTVImpact]
+    cac_ltv_impact: CACLTVImpact
     cost_estimates: Dict[str, CostEstimate]
     top_roi_intervention: TopROIIntervention
 
@@ -188,7 +188,7 @@ Constraints: {constraints}
             "additional_interventions": additional_dump,
             "proposed_interventions": interventions_dump,
             "roi_projections": {k: v.model_dump() for k, v in response.roi_projections.items()},
-            "cac_ltv_impact": {k: v.model_dump() for k, v in response.cac_ltv_impact.items()},
+            "cac_ltv_impact": response.cac_ltv_impact.model_dump(),
             "cost_estimates": {k: v.model_dump() for k, v in response.cost_estimates.items()},
             "top_roi_intervention": response.top_roi_intervention.model_dump(),
             "framework": "Unit Economics / LTV-CAC",
