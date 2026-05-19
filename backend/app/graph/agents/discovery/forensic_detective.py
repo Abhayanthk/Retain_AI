@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, List, Dict, Tuple
 from pydantic import BaseModel, Field
 from app.graph.utils import get_churn_column, safe_llm_invoke
@@ -420,11 +421,15 @@ Requirements:
         )
 
         # Self-consistency: 3 runs at different temps, vote on causes appearing in >=2/3 runs.
-        # Free-tier safe — Gemini round-robin in get_llm handles rate limits.
+        # Runs fire in parallel via ThreadPoolExecutor — each call uses a different Gemini
+        # key (round-robin in get_llm) so 3 concurrent requests hit 3 different slots.
+        # Wall time drops from sum(per-call) to max(per-call) — typically 3x speedup.
         runs: List[DetectiveResult] = []
         run_errors: List[str] = []
         total_runs = len(SELF_CONSISTENCY_TEMPS)
-        for idx, t in enumerate(SELF_CONSISTENCY_TEMPS, start=1):
+
+        def _run_one(idx_temp: Tuple[int, float]) -> Tuple[int, float, DetectiveResult | None, str | None]:
+            idx, t = idx_temp
             push_progress(job_id, "forensic_progress", {
                 "run": idx, "total": total_runs, "temp": t, "status": "started",
             })
@@ -434,17 +439,30 @@ Requirements:
                     llm_t, DetectiveResult, formatted_prompt,
                     agent_name=f"ForensicDetective(t={t})",
                 )
-                runs.append(resp)
                 push_progress(job_id, "forensic_progress", {
                     "run": idx, "total": total_runs, "temp": t,
                     "status": "completed", "causes_found": len(resp.suspected_causes),
                 })
+                return idx, t, resp, None
             except Exception as run_err:
-                run_errors.append(f"temp={t}: {run_err}")
                 push_progress(job_id, "forensic_progress", {
                     "run": idx, "total": total_runs, "temp": t,
                     "status": "failed", "error": str(run_err)[:120],
                 })
+                return idx, t, None, f"temp={t}: {run_err}"
+
+        with ThreadPoolExecutor(max_workers=total_runs) as pool:
+            results = list(pool.map(
+                _run_one,
+                list(enumerate(SELF_CONSISTENCY_TEMPS, start=1)),
+            ))
+
+        # Preserve deterministic order (sorted by run idx) for downstream voting.
+        for idx, t, resp, err in sorted(results, key=lambda r: r[0]):
+            if resp is not None:
+                runs.append(resp)
+            if err is not None:
+                run_errors.append(err)
 
         if not runs:
             raise RuntimeError(
