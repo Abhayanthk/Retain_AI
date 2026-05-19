@@ -1,47 +1,87 @@
 # Node 1 — `input_ingest`
 
-**File:** [`backend/app/graph/nodes/input_ingest.py`](../../backend/app/graph/nodes/input_ingest.py) · **Entry point of the graph.**
+**File:** [`backend/app/graph/nodes/input_ingest.py`](../../backend/app/graph/nodes/input_ingest.py).
 
-## Purpose
+Entry point of the graph. Loads the CSV via DuckDB, detects key columns heuristically, and packages `input_context` + `input_constraints` for downstream nodes.
 
-Load the raw CSV into a DataFrame and detect which columns represent customer ID, tenure, usage, support, plan, and churn. Every downstream node relies on `input_context.detected_columns` to find the right columns, so this is the single source of truth for schema.
+## Inputs (from state)
 
-## Inputs (state)
-
-| Key | Source |
+| Key | Used for |
 |---|---|
-| `raw_csv_path` | POST body |
-| `questionnaire` | POST body (form payload) |
+| `raw_csv_path` | File to load. May be a basename — resolved against `/tmp/retain_ai_uploads/` first, then `os.getcwd()/data/`. |
+| `questionnaire` | Pull-through to `input_context` (business_context, industry, company_size) and `input_constraints` (time_range, product_lines, market_segment, budget, legal_constraints). |
 
-## Outputs (state)
+## Logic
 
-| Key | Shape |
-|---|---|
-| `raw_csv_path` | resolved absolute path (re-written so downstream nodes don't depend on `cwd`) |
-| `normalized_df` | `list[dict]` — `df.to_dict(orient="records")` |
-| `input_context` | `{source, row_count, column_count, detected_columns, business_context, industry, company_size}` |
-| `input_constraints` | `{time_range, product_lines, market_segment, budget_constraints, legal_constraints}` |
-| `retry_count` | propagated |
+```python
+df = duckdb.connect(":memory:").execute(f"SELECT * FROM read_csv_auto('{path}')").df()
 
-## Column detection
+# Case-insensitive heuristic column detection
+cols_lower = {col.lower(): col for col in df.columns}
+customer_id_col = next((cols_lower[k] for k in cols_lower if 'id' in k or 'user' in k), None)
+tenure_col      = next((cols_lower[k] for k in cols_lower if 'tenure' in k or 'months_active' in k or k == 'months'), None)
+usage_col       = next((cols_lower[k] for k in cols_lower if 'usage' in k or 'logins' in k), None)
+support_col     = next((cols_lower[k] for k in cols_lower if 'support' in k or 'tickets' in k), None)
+plan_col        = next((cols_lower[k] for k in cols_lower if 'plan' in k or 'contract' in k), None)
+churn_col       = get_churn_column(df)  # in app/graph/utils.py
+```
 
-Case-insensitive substring match on column names:
+`get_churn_column()` is stricter: dtype must be int/float AND values must be a subset of `{0, 1}`. Falls back to columns literally named `is_churned` / `churned`.
 
-| Field | Matches |
-|---|---|
-| `customer_id` | `id`, `user` |
-| `tenure` | `tenure`, `months_active`, `months` |
-| `usage` | `usage`, `logins` |
-| `support` | `support`, `tickets` |
-| `plan` | `plan`, `contract` |
-| `churn` | via `get_churn_column()` — requires binary `{0,1}` column whose name contains `churn` |
+## Outputs (to state)
 
-`get_churn_column` lives in [`backend/app/graph/utils.py`](../../backend/app/graph/utils.py).
+```python
+{
+    "raw_csv_path": <resolved absolute path>,            # rewritten so downstream nodes don't depend on cwd
+    "normalized_df": [{...row dict...}, ...],            # whole CSV
+    "input_context": {
+        "source": path,
+        "row_count": int,
+        "column_count": int,
+        "detected_columns": {
+            "customer_id", "tenure", "usage", "support", "plan", "churn"  # values or None
+        },
+        "business_context": str,
+        "industry": str,
+        "company_size": str,
+    },
+    "input_constraints": {
+        "time_range": str,
+        "product_lines": list,
+        "market_segment": str,
+        "budget_constraints": str,
+        "legal_constraints": list,
+    },
+    "current_node": "input_ingest",
+    "retry_count": int,
+}
+```
 
-## Failure mode
+## Why DuckDB
 
-On exception: appends to `errors`, increments `retry_count`. Does not raise — the graph continues so `data_audit` can score whatever was loaded (if anything).
+`read_csv_auto` figures out delimiters, header rows, and dtypes without configuration. Cheaper than Pandas' inference for the 50–10k-row datasets the pipeline targets.
+
+## Failure handling
+
+On any exception (file not found, malformed CSV, encoding error) the node returns:
+
+```python
+{
+    "errors": [*state.get("errors", []), f"Input ingest error: {e}"],
+    "current_node": "input_ingest",
+    "retry_count": state.get("retry_count", 0) + 1,
+}
+```
+
+The graph continues with a missing `normalized_df`. `data_audit` will then fail similarly and `route_after_data_audit` will route to `retry_handler` (which currently exits immediately since `MAX_RETRIES=0`).
 
 ## Called by
 
-Entry point (`graph.set_entry_point("input_ingest")`). Also re-entered from [`retry_handler`](./retry-handler.md) when data quality fails.
+- Graph entry point (`graph.set_entry_point("input_ingest")`).
+- Re-entered from [`retry_handler`](./retry-handler.md) if `retry_count < MAX_RETRIES`.
+
+## Gotchas
+
+- `normalized_df` is the **entire CSV** as a list of row dicts. For a 10k-row file that's measurable RSS pressure on Render's free tier. Downstream nodes re-read the CSV from `raw_csv_path` via DuckDB instead of pulling from state — this state key exists for completeness but is essentially write-only.
+- `detected_columns` values may be `None`. Every downstream node guards with `next((c for c in df.columns if ...), None)` as a fallback heuristic in case ingest missed.
+- The case-insensitive scan is greedy and order-dependent — if your CSV has both `customer_id` and `user_id` columns, the first match wins (dict iteration order).

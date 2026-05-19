@@ -1,10 +1,15 @@
 # Node — `retry_handler`
 
-**File:** [`backend/app/graph/nodes/retry_handler.py`](../../backend/app/graph/nodes/retry_handler.py)
+**File:** [`backend/app/graph/nodes/retry_handler.py`](../../backend/app/graph/nodes/retry_handler.py).
 
-## Purpose
+Fallback branch when `data_audit` scores below `DATA_QUALITY_THRESHOLD` (0.5). Currently functions as a pass-through node because `MAX_RETRIES = 0` in `conditions.py`.
 
-Fallback branch when `data_audit` scores below threshold. Builds a human-readable message listing detected issues (missing values, duplicates, size) and a suggestion list. The conditional edge `route_after_retry` then either loops back to `input_ingest` (if `retry_count < MAX_RETRIES`) or proceeds to `feature_engineering` with whatever data exists.
+## What it does (when retry is enabled)
+
+1. Increments `retry_count`.
+2. Inspects `data_quality_logs` to compile a list of `quality_issues` (high nulls, duplicates, insufficient volume).
+3. Generates a `user_message` either asking for a cleaner dataset or declaring `FAILED_MAX_RETRIES`.
+4. Calls `generate_data_quality_suggestions(logs)` → top 3 actionable suggestions ("Remove rows with >20% missing values", "Deduplicate by customer ID", …).
 
 ## Outputs
 
@@ -12,10 +17,29 @@ Fallback branch when `data_audit` scores below threshold. Builds a human-readabl
 |---|---|
 | `retry_count` | int, incremented |
 | `status` | `AWAITING_USER_DATA` / `FAILED_MAX_RETRIES` / `ERROR` |
-| `user_message` | string with issues and attempt count |
-| `user_action` | short next-step string |
-| `suggestion` | top 3 suggestions from `generate_data_quality_suggestions()` |
+| `user_message` | Long human-readable string with issues + attempt count. |
+| `user_action` | Short next-step string ("Upload a cleaned CSV with fewer nulls"). |
+| `suggestion` | Top 3 entries from `generate_data_quality_suggestions()`. |
+| `quality_score`, `quality_issues` | Echoes from data_audit for convenience. |
 
-## Loop behaviour
+## Routing
 
-`MAX_RETRIES = 0` in [`conditions.py`](../../backend/app/graph/conditions.py) — the loop is currently disabled, so this node always forwards to `feature_engineering`. Raising that constant turns on iterative data-quality retries.
+`route_after_retry` in `conditions.py`:
+
+```python
+if state.get("retry_count", 0) >= MAX_RETRIES:
+    return "feature_engineering"
+return "input_ingest"
+```
+
+With `MAX_RETRIES = 0`, retry_count after this node is 1 → `1 >= 0` → forwards to `feature_engineering`. No loop fires.
+
+## Why the loop is disabled
+
+The retry would loop `input_ingest → data_audit → retry_handler → input_ingest`. Each pass re-loads the full CSV into `state["normalized_df"]` and re-runs feature engineering downstream. On Render's 512 MB free tier this doubles RSS quickly. The retry only buys back signal if the user uploads a different file mid-session, which the UI doesn't currently support.
+
+To re-enable: set `MAX_RETRIES = 1` (one retry) or higher and add a UI affordance that lets the user replace the CSV without restarting the whole pipeline.
+
+## Failure handling
+
+Any exception during message construction is caught and converted to `status: "ERROR"` with the exception text in `user_message`. The downstream `feature_engineering` node will still run.

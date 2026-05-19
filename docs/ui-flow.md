@@ -1,56 +1,74 @@
 # UI & Data Flow
 
-End-to-end trace from the form submission to the streamed playbook rendering.
+End-to-end trace from the user clicking **Submit** on the form to the playbook rendering. Read [pipeline-overview.md](./pipeline-overview.md) first if you haven't.
 
 ## Files
 
 | Role | File |
 |---|---|
 | Landing | [`frontend/app/page.tsx`](../frontend/app/page.tsx) |
-| Form (5 phases, 45+ fields) | [`frontend/app/form/page.tsx`](../frontend/app/form/page.tsx) |
+| Form (5 phases) | [`frontend/app/form/page.tsx`](../frontend/app/form/page.tsx) |
 | Results + SSE | [`frontend/app/results/[job_id]/page.tsx`](../frontend/app/results/[job_id]/page.tsx) |
+| Dashboard CSS | [`frontend/app/dashboard.css`](../frontend/app/dashboard.css) |
 | API entry | [`backend/app/main.py`](../backend/app/main.py) |
+| SSE infra | [`backend/app/shared.py`](../backend/app/shared.py), [`backend/app/graph/stream_utils.py`](../backend/app/graph/stream_utils.py) |
 
-## Routes
+## HTTP API
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/upload` | Stores uploaded CSV in temp dir and returns unique `file_path`. |
-| `POST` | `/analyze` | Queue a new analysis. Returns `{job_id}`. |
-| `GET` | `/analyze/stream/{job_id}` | Server-Sent Events stream of per-node updates. |
-| `GET` | `/` | Health check. |
+| Method | Path | Purpose | Body / Returns |
+|---|---|---|---|
+| `POST` | `/upload` | Store uploaded CSV in `/tmp/retain_ai_uploads/<uuid>.csv`. | FormData `file`. Returns `{status, file_path, original_name}`. |
+| `POST` | `/analyze` | Queue a new analysis. Creates `active_streams[job_id]` and sends an Inngest event. | `{raw_csv_path, questionnaire}`. Returns `{status: "queued", job_id, message}`. |
+| `GET`  | `/analyze/stream/{job_id}` | Server-Sent Events stream. Drains `active_streams[job_id]["queue"]` until a `complete` event. | `text/event-stream`. |
+| `POST` | `/analyze/{job_id}/cancel` | Mark the job cancelled. Next node entry raises `JobCancelled`. Also `set()`s the HITL event so a paused graph unblocks. | `{}`. Returns `{status, job_id, cancelled}`. |
+| `POST` | `/analyze/{job_id}/respond` | Submit HITL answers. Sets `stream["hitl_event"]` so `adaptive_hitl` resumes. | `{answers: {...}}`. Returns `{status: "ok"}`. |
+| `GET`  | `/` | Health string. |  |
+| `GET`  | `/healthz` | Liveness probe. | `{ok: true}`. |
 
-## Request payload
+## Request payload shape
 
-The form collects 5 phases of qualitative questions (business context, ICP, monetization, channels, goals). When the user submits, the frontend first uploads the CSV via `POST /upload`, retrieves a temporary file path, and then sends the complete JSON payload:
+The frontend uploads the CSV first, then sends the analysis request:
 
 ```json
+POST /analyze
 {
-  "raw_csv_path": "a1b2c3d4e5f6.csv",
+  "raw_csv_path": "a1b2c3d4...csv",     // returned by /upload — basename, not full path
   "questionnaire": {
-    "business_context": "...",
+    "business_context": "Retention analytics for SaaS",
     "industry": "SaaS",
     "size": "100-500",
-    "business_model": "B2B",
+    "business_model": "B2B SaaS",
     "company_stage": "Series A",
+    "goal": "Reduce churn rate",
+    "timeline": "Quick wins (30 days)",
+    "priority_segment": "Newest customers (first 90 days)",
+    "typical_customer": "...",
+    "can_ship_changes": "No",
+    "support_model": "Self-serve only",
+    "pricing_flexibility": ["None — pricing is locked"],
+    "retention_tactics": ["onboarding email"],
+    "competitors": ["Slack"],
+    "churn_destination": "Microsoft Teams",
     "time_range": "last_12_months",
     "legal_constraints": ["GDPR"],
-    ...
+    "budget": "medium"
   }
 }
 ```
 
-The API resolves the CSV path primarily against `/tmp/retain_ai_uploads/` for cloud deployments, falling back to `backend/data/` for local static files in `input_ingest_node`.
+Many of these keys are read directly by the strategy / critic / architect prompts — the field names matter. Adding a new questionnaire field requires updating both the form (`form/page.tsx`) and any prompt that should consume it.
 
-## Session storage
+`raw_csv_path` is a bare basename — `input_ingest` resolves it against `/tmp/retain_ai_uploads/` first and `backend/data/` as fallback for local static files.
 
-To survive page reloads without refetching, the frontend persists:
+## Session storage (frontend)
 
 | Key | Contents |
 |---|---|
-| `latest_form_state` | current form inputs (so returning to `/form` pre-fills fields) |
-| `latest_form_payload` | JSON actually sent to `/analyze` |
-| `job_{jobId}` | accumulated SSE events + final playbook for one job |
+| `latest_form_state` | Current form inputs — pre-fills `/form` on return. |
+| `latest_form_payload` | JSON actually sent to `/analyze`. Used to re-display the request that started a job. |
+| `job_{jobId}` | Accumulated SSE events + final playbook for one job. Lets the results page survive a refresh without losing state. |
+
+The results page checks `job_{jobId}` on mount and only opens a fresh `EventSource` if no terminal `complete` event has been recorded yet.
 
 ## Sequence
 
@@ -63,87 +81,146 @@ sequenceDiagram
     participant I as Inngest
     participant G as LangGraph
 
-    U->>F: Fill form + upload CSV
+    U->>F: Fill form + select CSV
     F->>A: POST /upload (FormData)
     A-->>F: { file_path }
     F->>A: POST /analyze { raw_csv_path, questionnaire }
-    A->>A: job_id = uuid4()<br/>active_streams[job_id] = Queue()
+    A->>A: job_id = uuid4()<br/>active_streams[job_id] = {queue, hitl_event, hitl_answers, cancelled}
     A->>I: inngest.send(event="app/analyze")
     A-->>F: { job_id, status: "queued" }
     F->>F: router.push(/results/{job_id})
-    F->>A: GET /analyze/stream/{job_id} (SSE)
-    A->>F: open stream, poll queue
+    F->>A: GET /analyze/stream/{job_id}
+    A->>F: open SSE, await queue
 
     I->>G: analyze_retention_job(ctx, step)
     G->>G: astream(initial_state, stream_mode="values")
 
-    loop for each node
+    loop every node yields a state
         G-->>A: state.current_node
-        alt feature_engineering
-            A->>Q: { type: "risk_ready", data: {...} }
-        else behavioral_map
-            A->>Q: { type: "churn_profile_ready", data: {...} }
-        else diagnosis_merge
-            A->>Q: { type: "diagnosis_ready", data: {merged_hypotheses} }
-        else execution_architect
-            A->>Q: { type: "solution_ready", data: {final_playbook} }
+        Note over A,Q: emit only on selected transitions
+        alt feature_engineering done
+            A->>Q: risk_ready
+        else behavioral_map done
+            A->>Q: churn_profile_ready
+        else diagnosis_merge done
+            A->>Q: diagnosis_ready
+        else simulation done
+            A->>Q: simulation_ready
+        else execution_architect done
+            A->>Q: solution_ready
         end
         Q-->>F: SSE event
         F->>U: render card live
     end
 
-    A->>Q: { type: "complete" }
+    opt mid-node progress (forensic self-consistency)
+        G->>Q: forensic_progress (via push_progress)
+        Q-->>F: SSE event
+    end
+
+    opt HITL pause
+        G->>Q: hitl_questions_ready
+        Q-->>F: render modal
+        U->>F: submit answers
+        F->>A: POST /analyze/{job_id}/respond
+        A->>A: stream["hitl_event"].set()
+        Note over G: graph resumes
+    end
+
+    opt critic retry
+        G->>Q: critic_retry_started
+    end
+
+    A->>Q: complete
     Q-->>F: SSE complete
-    F->>F: close EventSource<br/>release job_{jobId} storage
+    F->>F: close EventSource, persist job_{jobId}
 ```
 
 ## SSE event schema
 
-Every event is JSON of the form:
+Every event is JSON:
 
 ```
-{ "type": "<event_type>", "message": "...", "data": { ... } }
+{ "type": "<event_type>", "message": "...", "data": { ... }, "ts_ms": 1234567890 }
 ```
 
-| `type` | Fired in (node) | `data` keys |
+(`ts_ms` is added by `push_progress`; the stage-transition events written in `main.py` do not include it.)
+
+### Stage transitions (one per pipeline stage)
+
+| `type` | Fired in | `data` keys |
 |---|---|---|
-| `risk_ready` | `feature_engineering` | `high_risk_count, total_active, risk_pct, confidence, insight, has_model` |
-| `churn_profile_ready` | `behavioral_map` | `churn_probability, survival_curve, max_tenure, median_survival_time, milestone_retention, behavior_cohorts` |
-| `diagnosis_ready` | `diagnosis_merge` | `merged_hypotheses` |
-| `solution_ready` | `execution_architect` | `final_playbook` |
-| `complete` | stream teardown | `{}` |
+| `risk_ready` | `feature_engineering` | `high_risk_count`, `total_active`, `risk_pct`, `confidence`, `insight`, `has_model`, `feature_store: {ltv_estimates, velocity_metrics, engagement_cohorts, rfm_scores}`, `data_quality_score`, `data_quality_logs`, `input_context`. |
+| `churn_profile_ready` | `behavioral_map` | `churn_probability`, `survival_curve`, `max_tenure`, `median_survival_time`, `milestone_retention`, `milestone_metadata`, `behavior_cohorts`. |
+| `diagnosis_ready` | `diagnosis_merge` | `merged_hypotheses`, `forensic_findings`, `pattern_findings`, `skeptic_findings`, `user_segments`, `top_segments`, `driver_features`, `total_patterns_identified`, `competitors`, `churn_destination`, `competitor_research`. |
+| `simulation_ready` | `simulation` | `expected_lift`, `confidence_low`, `confidence_high`, `expected_roi`, `iterations`, `interventions: [{name, p10, mean, p90, lift_prior_anchor, lift_prior_pct, lift_prior_citations}]`, `rag_anchored_count`, `strategy_skeptic`. |
+| `solution_ready` | `execution_architect` | `final_playbook` (full Pydantic dump including `reasoning_trace` + per-problem `rationale_chain`), `evidence_dossier`. |
+| `complete` | end of stream | `{}`. SSE handler closes and pops `active_streams[job_id]`. |
+
+### Mid-node progress (`push_progress`)
+
+| `type` | Pushed by | When | `data` |
+|---|---|---|---|
+| `forensic_progress` | `forensic_detective` self-consistency loop | Each of the 3 parallel runs at temps 0.2/0.5/0.7 emits `started` → `completed`/`failed`. | `{run, total, temp, status, causes_found?, error?}`. |
+| `hitl_questions_ready` | `adaptive_hitl` | Before suspending for human answers. | `{questions: [...]}`. |
+| `critic_retry_started` | `strategy_critic` | Only when a retry will actually fire (verdict ≠ approved AND iterations < MAX). With `MAX_CRITIC_ITERATIONS=0` this never fires in production. | `{iteration, max, verdict, reason, weak_points_count, skeptic_flags}`. |
+
+### Terminal failures
+
+| `type` | When | `data` |
+|---|---|---|
+| `cancelled` | `JobCancelled` raised mid-pipeline (user hit cancel). Followed by `complete`. | `{job_id}`. |
+| `error` | Uncaught exception in `execute_and_stream`. Followed by `complete`. | `{error_type, error_message, last_node}`. |
+
+### Heartbeat
+
+If the queue is idle for 15s the SSE handler yields `: heartbeat\n\n` (an SSE comment). Keeps Render's idle-connection killer and intermediate proxies from closing the stream during long-running nodes (forensic_detective can take ~50s).
 
 ## React consumption
 
-The results page holds one `useRef<EventSource | null>` to prevent duplicate connections under React Strict Mode. Each event type updates a different piece of local state:
+The results page (`results/[job_id]/page.tsx`):
 
-- `risk_ready` → "Churn Risk" card
-- `churn_profile_ready` → Survival slider + milestone strip + median card
-- `diagnosis_ready` → Root Cause cards
-- `solution_ready` → Playbook tab (problems, 30-60-90, metrics, risks)
+- Holds one `useRef<EventSource | null>` to dedupe under React Strict Mode.
+- On mount: reads `job_{jobId}` from `sessionStorage` — if a terminal `complete` event was recorded, replays from cache instead of opening a fresh `EventSource`.
+- Otherwise opens `GET /analyze/stream/{job_id}` and accumulates events.
+
+| Event type | Renders |
+|---|---|
+| `risk_ready` | "Churn Risk" card + RFM/velocity/cohort summary. |
+| `churn_profile_ready` | Survival slider, milestone retention strip, median-survival card, tenure cohort chips. |
+| `forensic_progress` | Optional inline progress chips on the forensic step. |
+| `hitl_questions_ready` | Modal with 2–3 inputs; submit posts to `/analyze/{job_id}/respond`. |
+| `diagnosis_ready` | Root-cause cards (clickable → F15 evidence drawer with stat / citations / skeptic caveat / alternative / hazard drivers). |
+| `simulation_ready` | Lift band + intervention rows (each shows `lift_prior_anchor` badge, RAG citation pills). |
+| `solution_ready` | Playbook tab — problems & solutions (with F16 rationale chain strip), 30-60-90 roadmap, success metrics, risks, "Why this playbook" reasoning-trace toggle. |
+| `cancelled` / `error` | Banner + recovery CTA. |
+| `complete` | Close `EventSource`. |
 
 ## Survival slider
 
-The survival curve arrives as `{ "month_1": 0.95, "month_2": 0.91, ... }`. The page parses it once:
+`behavior_curves.survival_curve` arrives as `{month_1: 0.95, month_2: 0.91, ..., month_24: 0.42}`. Parsed once:
 
 ```ts
 const points = parseSurvivalCurve(curves.survival_curve);
 ```
 
-…initializes `tenureSlider` to `max_tenure`, and on each slide updates:
+…initialized to `max_tenure`. On slide:
 
 ```ts
 const churnPct = getChurnAtPeriod(points, tenureSlider);   // nearest-lower lookup
 ```
 
-See `parseSurvivalCurve` and `getChurnAtPeriod` at the top of [`frontend/app/results/[job_id]/page.tsx`](../frontend/app/results/[job_id]/page.tsx).
+Both helpers live at the top of `frontend/app/results/[job_id]/page.tsx`.
 
 ## NaN-safe JSON
 
-LangGraph state can contain `NaN` / `Infinity` from lifelines — invalid JSON. `_sanitize()` in [`backend/app/main.py`](../backend/app/main.py) walks the final state and replaces those with `None` before the Inngest response is serialized.
+`lifelines` can produce `NaN` / `Infinity` (e.g. `median_survival_time` when fewer than 50% of users have churned). Those are invalid JSON. `_sanitize()` in `app/main.py` walks the final state recursively and replaces them with `None` before the Inngest step returns.
 
 ## Error handling
 
-- **Backend error in a node:** the node writes `{errors: [...]}` into state but the graph continues; the SSE event for that node just isn't emitted.
-- **Frontend reconnect:** if the SSE connection drops, re-opening `/analyze/stream/{job_id}` returns 404 once the job has completed (the queue is popped in the `finally` block of `event_generator`). The frontend falls back to the snapshot in `sessionStorage["job_{jobId}"]`.
-- **Inngest signature changes:** the job handler uses the `*args, **kwargs` pattern to remain compatible across Inngest SDK 0.5.x versions — `ctx = kwargs.get('ctx') or args[0]`.
+- **Node exception:** the node catches and returns `{"errors": [...]}` (using the `operator.add` reducer). The graph continues; the SSE for that stage simply isn't emitted because `current_node` advances.
+- **Inngest step crash:** the `execute_and_stream` `except` block pushes an `error` SSE then `complete` so the frontend exits cleanly.
+- **SSE disconnect mid-pipeline:** the handler breaks the loop but does **not** pop `active_streams[job_id]` — the queue keeps filling. The frontend can reconnect by re-issuing `GET /analyze/stream/{job_id}` and pick up where it left off (until `complete`, which pops).
+- **HITL timeout:** 5 minutes. The graph proceeds with empty `responses` and `clarification_status: "timeout"`. Downstream strategy agents read `human_clarification.responses` as `{}`.
+- **Cancellation race during HITL:** the cancel endpoint sets `hitl_event.set()` so the awaiting `asyncio.wait_for` unblocks immediately; the next `_wrap_node` entry then raises `JobCancelled`.
+- **Inngest SDK arg-shape drift:** the job handler uses `*args, **kwargs` and tries `kwargs.get("ctx")` then `args[0]` to survive 0.5.x→ shape changes.
