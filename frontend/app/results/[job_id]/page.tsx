@@ -93,7 +93,26 @@ export default function ResultsPage() {
     if (!payloadStr) return toast.error("No previous form data found to rerun.");
     setIsRerunning(true);
     try {
-      const res = await fetch(`${API_BASE}/analyze`, { method: "POST", headers: { "Content-Type": "application/json" }, body: payloadStr });
+      const payload = JSON.parse(payloadStr);
+
+      // Re-upload the stashed CSV to get a fresh server-side file. The original
+      // temp file may be gone (server restart / Render spin-down), which is why
+      // a bare rerun of the old payload failed with "CSV not found".
+      const csvText = sessionStorage.getItem("latest_csv_text");
+      const csvName = sessionStorage.getItem("latest_csv_name") || "data.csv";
+      if (csvText) {
+        const fd = new FormData();
+        fd.append("file", new File([csvText], csvName, { type: "text/csv" }));
+        const up = await fetch(`${API_BASE}/upload`, { method: "POST", body: fd });
+        if (up.ok) {
+          payload.raw_csv_path = (await up.json()).file_path;
+        }
+      }
+
+      const res = await fetch(`${API_BASE}/analyze`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
       if (!res.ok) throw new Error();
       const data = await res.json();
       toast.success("Rerun started!");
@@ -176,7 +195,7 @@ export default function ResultsPage() {
             )}
 
             {sim ? <SimulationSection data={sim} visible={true} />
-                 : <PendingSection title="Monte Carlo Simulation" tone="teal" label="Stage 5 · awaiting simulation_ready" />}
+                 : <PendingSection title="Projected Impact" tone="teal" label="Stage 5 · awaiting simulation_ready" />}
 
             {playbook ? <StrategySection data={playbook} ctx={ctx} visible={true} />
                       : <PendingSection title="Strategy" tone="emerald" label="Stage 6 · awaiting solution_ready" />}

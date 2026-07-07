@@ -18,19 +18,24 @@ interface Snapshot {
   errorInfo?: ErrorInfo | null;
   hitlSubmitted?: boolean;
   jobStartTs?: number;
-  stageStartTs?: Record<string, number>;
-  stageEndTs?: Record<string, number>;
+  // eventKey (SSE event type) → backend ts_ms when that stage completed.
+  stageEventTs?: Record<string, number>;
 }
 
 /* SSE — survives page refresh.
    Persistence model:
      - Every event mutates sessionStorage `job_${jobId}` with the latest
-       stagesData + connectionStatus + errorInfo + hitlSubmitted.
+       stagesData + connectionStatus + errorInfo + hitlSubmitted + stageEventTs.
      - On mount we restore the snapshot first. If status is terminal
        (complete / error / cancelled) we never open a new SSE — backend
-       has already cleaned up its queue and would return 404.
-     - If status is non-terminal, we open SSE; on a hard 404 we fall back
-       to whatever cached data we have rather than showing a fake error. */
+       has already cleaned up and would 404.
+     - If status is non-terminal, we open SSE; the backend broadcasts the full
+       event history from cursor 0, so a refresh replays everything.
+
+   Stage durations come from each event's backend `ts_ms` (fixed wall-clock),
+   NOT from client arrival time. That's the whole point: on a refresh the
+   server replays the entire history in one burst, so client arrival times all
+   collapse to ~now — using ts_ms keeps every duration correct across refreshes. */
 export function useAnalysisStream(jobId: string) {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("connecting");
   const [errorInfo, setErrorInfo] = useState<ErrorInfo | null>(null);
@@ -39,16 +44,15 @@ export function useAnalysisStream(jobId: string) {
   const [forensicProgress, setForensicProgress] = useState<ForensicProgress | null>(null);
   const [retryInfo, setRetryInfo] = useState<RetryInfo | null>(null);
 
-  // Stage timing — visibility into "how long" + "is it stuck".
+  // Backend completion timestamp per stage event; durations derived from these.
   const [jobStartTs, setJobStartTs] = useState<number | null>(null);
-  const [stageStartTs, setStageStartTs] = useState<Record<string, number>>({});
-  const [stageEndTs, setStageEndTs] = useState<Record<string, number>>({});
+  const [stageEventTs, setStageEventTs] = useState<Record<string, number>>({});
   const [now, setNow] = useState<number>(() => Date.now());
 
   const sseRef = useRef<EventSource | null>(null);
-  // Cache the latest snapshot pieces in refs so writeSnapshot() (called from
-  // SSE handlers) always writes the freshest combined state, regardless of
-  // React's setState batching.
+  // Cache latest snapshot pieces in refs so writeSnapshot() (called from SSE
+  // handlers) always writes the freshest combined state, regardless of React
+  // setState batching.
   const stagesDataRef = useRef<StagesData>({});
   const hitlSubmittedRef = useRef(false);
 
@@ -80,20 +84,17 @@ export function useAnalysisStream(jobId: string) {
         if (p.stagesData) { setStagesData(p.stagesData); stagesDataRef.current = p.stagesData; }
         if (p.hitlSubmitted) { setHitlSubmitted(true); hitlSubmittedRef.current = true; }
         if (p.errorInfo) setErrorInfo(p.errorInfo);
-        // Restore stage timers so a refresh doesn't reset durations to 0s /
-        // restart the active stage's clock. Must land before the stamping
-        // effect runs (same batched render as stagesData above).
+        // Restore stage timing (ts_ms per event + job start) so durations
+        // survive refresh instead of resetting to 0s.
         if (typeof p.jobStartTs === "number") setJobStartTs(p.jobStartTs);
-        if (p.stageStartTs) setStageStartTs(p.stageStartTs);
-        if (p.stageEndTs) setStageEndTs(p.stageEndTs);
+        if (p.stageEventTs) setStageEventTs(p.stageEventTs);
         if (p.connectionStatus === "complete" || p.connectionStatus === "error" || p.connectionStatus === "cancelled") {
           setConnectionStatus(p.connectionStatus);
           restoredStatus = p.connectionStatus;
         }
       } catch { /* ignore */ }
     }
-    // Terminal state already cached — backend job has been cleaned up.
-    // Skip SSE entirely so we don't hit 404 and flip to a fake error banner.
+    // Terminal state already cached — skip SSE so we don't 404 into a fake error.
     if (restoredStatus) return;
 
     const sse = new EventSource(`${API_BASE}/analyze/stream/${jobId}`);
@@ -102,11 +103,16 @@ export function useAnalysisStream(jobId: string) {
     sse.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data);
+        const evTs = typeof event.ts_ms === "number" ? event.ts_ms : Date.now();
 
-        // Seed the job timer on the first event we see.
-        setJobStartTs((prev) => prev ?? Date.now());
+        // Seed the job timer from the first event's backend timestamp.
+        setJobStartTs((prev) => {
+          if (prev != null) return prev;
+          writeSnapshot({ jobStartTs: evTs });
+          return evTs;
+        });
 
-        // Interim progress events — don't store in stagesData since they're not stages.
+        // Interim progress events — not stages, don't store in stagesData.
         if (event.type === "forensic_progress") {
           setForensicProgress({
             run: event.data?.run ?? 0,
@@ -153,6 +159,15 @@ export function useAnalysisStream(jobId: string) {
           return;
         }
 
+        // Record the stage completion timestamp (first occurrence wins, so
+        // replay on refresh keeps the original backend time).
+        setStageEventTs((prev) => {
+          if (prev[event.type] !== undefined) return prev;
+          const next = { ...prev, [event.type]: evTs };
+          writeSnapshot({ stageEventTs: next });
+          return next;
+        });
+
         setStagesData((prev) => {
           const updated = { ...prev, [event.type]: event.data };
           stagesDataRef.current = updated;
@@ -166,25 +181,19 @@ export function useAnalysisStream(jobId: string) {
         if (event.type === "complete") { setConnectionStatus("complete"); sse.close(); sseRef.current = null; }
       } catch (err) { console.error("SSE parse error:", err); }
     };
-    // EventSource auto-reconnects on transient drops; only declare error
-    // after repeated failures AND only if the cached snapshot isn't already
-    // in a usable terminal state. This prevents the classic "refresh after
-    // pipeline completed → backend popped active_streams → SSE 404 → fake
-    // 'ConnectionLost' banner overlaying perfectly-good cached results" bug.
+    // EventSource auto-reconnects on transient drops; only declare error after
+    // repeated failures AND only if the cached snapshot isn't already usable.
     let errorCount = 0;
     sse.onerror = () => {
       errorCount++;
       if (errorCount >= 5) {
         sse.close();
         sseRef.current = null;
-        // If we already have a final playbook cached, the job actually
-        // finished — just mark complete and move on.
         if (stagesDataRef.current?.solution_ready || stagesDataRef.current?.complete) {
           setConnectionStatus("complete");
           writeSnapshot({ connectionStatus: "complete" });
           return;
         }
-        // Truly lost — no cached terminal payload.
         const errInfo: ErrorInfo = { type: "ConnectionLost", message: "Lost connection to backend after multiple retries." };
         setErrorInfo(errInfo);
         setConnectionStatus("error");
@@ -208,38 +217,29 @@ export function useAnalysisStream(jobId: string) {
     [stagesData, hitlSubmitted, complete],
   );
 
-  /* Stamp each stage's first "active" + first "done" exactly once. */
-  useEffect(() => {
-    const ts = Date.now();
-    let startChanged = false;
-    const nextStart: Record<string, number> = { ...stageStartTs };
-    let endChanged = false;
-    const nextEnd: Record<string, number> = { ...stageEndTs };
-    for (const s of PIPELINE_STEPS) {
-      const status = pipelineState[s.id];
-      if ((status === "active" || status === "done") && nextStart[s.id] === undefined) {
-        nextStart[s.id] = ts; startChanged = true;
+  /* Derive per-stage [start, end] from backend event timestamps.
+     Each stage's END = its completion event's ts_ms. Its START = the previous
+     completed stage's ts_ms (or the job start). The active (not-yet-done) stage
+     gets a start but no end, so the Sidebar ticks it against `now`. Pending
+     stages get nothing. All refresh-proof because ts_ms is fixed server-side. */
+  const { stageStartTs, stageEndTs } = useMemo(() => {
+    const start: Record<string, number> = {};
+    const end: Record<string, number> = {};
+    let prevTs = jobStartTs ?? undefined;
+    for (const step of PIPELINE_STEPS) {
+      const evTs = stageEventTs[step.key];
+      if (evTs !== undefined) {
+        if (prevTs !== undefined) start[step.id] = prevTs;
+        end[step.id] = evTs;
+        prevTs = evTs;
+      } else if (pipelineState[step.id] === "active") {
+        if (prevTs !== undefined) start[step.id] = prevTs;
+        // no end → ticks with `now`
       }
-      if (status === "done" && nextEnd[s.id] === undefined) {
-        nextEnd[s.id] = ts; endChanged = true;
-      }
+      // pending → no start, no timer shown
     }
-    if (startChanged) setStageStartTs(nextStart);
-    if (endChanged) setStageEndTs(nextEnd);
-    if (startChanged || endChanged) {
-      writeSnapshot({
-        ...(startChanged ? { stageStartTs: nextStart } : {}),
-        ...(endChanged ? { stageEndTs: nextEnd } : {}),
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pipelineState]);
-
-  /* Persist the job-start timestamp so total-elapsed survives refresh. */
-  useEffect(() => {
-    if (jobStartTs != null) writeSnapshot({ jobStartTs });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobStartTs]);
+    return { stageStartTs: start, stageEndTs: end };
+  }, [stageEventTs, jobStartTs, pipelineState]);
 
   return {
     connectionStatus, errorInfo, stagesData, pipelineState, complete,

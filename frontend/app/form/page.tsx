@@ -245,6 +245,20 @@ export default function FormPage() {
         if (!uploadRes.ok) throw new Error("Failed to upload CSV file. Please make sure backend is running.");
         const uploadData = await uploadRes.json();
         resolvedCsvPath = uploadData.file_path;
+
+        // Stash the raw CSV so "Rerun" on the results page can re-upload it.
+        // The server temp file doesn't survive a restart / Render spin-down,
+        // and the results page has no File object to re-send.
+        try {
+          const text = await form.csvFile.text();
+          if (text.length < 4_000_000) {
+            sessionStorage.setItem("latest_csv_text", text);
+            sessionStorage.setItem("latest_csv_name", form.csvFile.name);
+          } else {
+            sessionStorage.removeItem("latest_csv_text");
+            sessionStorage.removeItem("latest_csv_name");
+          }
+        } catch { /* text read failed — rerun falls back to the stale path */ }
       }
       
       const payload = {
