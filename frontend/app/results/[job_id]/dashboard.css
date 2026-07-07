@@ -116,7 +116,7 @@
 .stat { padding: 14px 14px 16px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; }
 .stat-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-zinc); margin-bottom: 8px; }
 .stat-value { font-size: 26px; font-weight: 700; letter-spacing: -0.025em; line-height: 1; color: var(--text); }
-.stat-value.sm { font-size: 20px; }
+.stat-value.sm { font-size: 20px; line-height: 1.2; }
 .stat-value.lg { font-size: 32px; }
 .stat-value.amber { color: var(--amber); }
 .stat-value.blue { color: var(--blue); }
@@ -189,11 +189,12 @@
 .sidebar-bottom { margin-top: auto; display: flex; gap: 6px; padding-top: 12px; border-top: 1px solid var(--border); }
 
 /* Churn Profile */
-/* Churn-grid stretches both cards by default (grid behaviour) which leaves
-   a big dead zone under the slider whenever the milestone card is taller.
-   Top-align instead and let the churn card grow naturally with its own
-   content (KM sparkline + summary stats). */
-.churn-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; align-items: start; }
+/* Two columns of equal height: the probability card on the left, and a
+   .churn-side flex column on the right (milestone grid + stacked cohort
+   rows). The cohort rows flex-grow to absorb any height difference, so
+   neither column ever shows a dead zone. */
+.churn-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; align-items: stretch; }
+.churn-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .churn-prob { padding: 20px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; }
 .churn-prob-num { font-size: 44px; font-weight: 700; letter-spacing: -0.03em; line-height: 1; color: var(--text); }
 .churn-prob-num small { font-size: 14px; font-weight: 500; color: var(--text-zinc); margin-left: 8px; }
@@ -202,11 +203,16 @@
 
 /* Inline KM survival sparkline sits below the slider — gives the card real
    visual weight and turns "abstract slider value" into a curve readers can
-   reason about. The vertical dashed line + dot pins the current month. */
+   reason about. The vertical dashed line + dot pins the current month.
+   flex: 1 lets it absorb whatever height the right column forces on the
+   card (preserveAspectRatio="none" stretches the SVG cleanly), so there is
+   never dead space between the chart and the bottom stats row. */
 .km-sparkline {
   display: block;
   width: 100%;
-  height: 72px;
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 88px;
   margin: 18px 0 14px;
 }
 
@@ -247,42 +253,20 @@
 .milestone-cell { padding: 10px 6px; background: rgba(255,255,255,0.015); border: 1px solid var(--border); border-radius: 6px; text-align: center; }
 .milestone-cell-label { font-size: 10px; color: var(--text-zinc); letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 4px; }
 .milestone-cell-val { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
-.cohorts { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-top: 12px; }
-.cohort { padding: 14px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; position: relative; overflow: hidden; }
-.cohort.focus { border-color: rgba(168,85,247,0.5); box-shadow: inset 0 0 0 1px rgba(168,85,247,0.15); padding-top: 30px; }
-.cohort-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+/* Cohorts: compact horizontal rows stacked inside .churn-side. Each row
+   flex-grows so the three of them soak up whatever height the milestone
+   card leaves over — keeps the right column flush with the left card. */
+.cohorts { flex: 1; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.cohort { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 16px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; min-width: 0; }
+.cohort.focus { border-color: rgba(168,85,247,0.5); box-shadow: inset 0 0 0 1px rgba(168,85,247,0.15); }
+.cohort-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cohort-name-row { display: flex; align-items: center; gap: 8px; }
 .cohort-name { font-size: 13px; font-weight: 600; }
-.cohort-meta { font-size: 11px; color: var(--text-zinc); letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; flex-shrink: 0; }
-.cohort-stats { display: flex; align-items: baseline; gap: 14px; margin-bottom: 10px; }
-.cohort-size { font-size: 22px; font-weight: 700; letter-spacing: -0.025em; font-variant-numeric: tabular-nums; }
-.cohort-retention { font-size: 13px; color: var(--emerald); font-variant-numeric: tabular-nums; }
+.cohort-meta { font-size: 11px; color: var(--text-zinc); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cohort-nums { display: flex; align-items: baseline; gap: 10px; flex-shrink: 0; }
+.cohort-size { font-size: 20px; font-weight: 700; letter-spacing: -0.025em; font-variant-numeric: tabular-nums; }
+.cohort-retention { font-size: 12px; color: var(--emerald); font-variant-numeric: tabular-nums; }
 .cohort-retention.warn { color: var(--amber); }
-.cohort-desc { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
-/* Focus pill: full-width ribbon at top of the card, no overlap with the
-   cohort name/meta row underneath. The cohort-head's padding-top reserves
-   the ribbon's space; no JSX changes needed. */
-.cohort .focus-pill {
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  padding: 5px 14px;
-  border-radius: 0;
-  border: 0;
-  background: linear-gradient(90deg, rgba(168,85,247,0.18) 0%, rgba(168,85,247,0.06) 100%);
-  border-bottom: 1px solid rgba(168,85,247,0.35);
-  color: rgba(216,180,254,0.95);
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  text-align: left;
-  width: auto;
-  z-index: 1;
-}
-.cohort .focus-pill::before {
-  content: "▸ ";
-  margin-right: 4px;
-  color: rgba(216,180,254,0.7);
-}
 
 /* Diagnosis */
 .hyp-list { display: flex; flex-direction: column; gap: 8px; }
@@ -395,7 +379,7 @@
 .impl-step-time { font-size: 11px; color: var(--text-2); letter-spacing: 0.02em; align-self: center; white-space: nowrap; }
 .impl-step-badges { display: flex; gap: 4px; flex-shrink: 0; align-self: center; }
 .roadmap { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-bottom: 18px; }
-.roadmap-col { padding: 16px 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; transition: opacity 0.2s ease; }
+.roadmap-col { padding: 16px 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; transition: opacity 0.2s ease; display: flex; flex-direction: column; }
 .roadmap-col.dim { opacity: 0.5; }
 .roadmap-col-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .roadmap-phase { font-size: 13px; font-weight: 700; letter-spacing: -0.01em; }
@@ -404,10 +388,15 @@
 .roadmap-goals { list-style: none; padding: 0; margin: 0 0 12px; display: flex; flex-direction: column; gap: 6px; }
 .roadmap-goals li { font-size: 12px; color: var(--text-2); line-height: 1.45; padding-left: 14px; position: relative; }
 .roadmap-goals li::before { content: ""; position: absolute; left: 0; top: 8px; width: 4px; height: 4px; border-radius: 50%; background: var(--text-zinc); }
-.roadmap-milestones { padding-top: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
-.roadmap-milestone { font-size: 11px; color: var(--text-muted); display: flex; gap: 8px; }
+.roadmap-milestones { padding-top: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+.roadmap-milestones-lbl { font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-zinc); margin-bottom: 2px; }
+.roadmap-milestone { font-size: 11px; color: var(--text-muted); display: flex; gap: 8px; line-height: 1.5; }
 .roadmap-milestone-day { color: var(--text-zinc); font-variant-numeric: tabular-nums; flex-shrink: 0; width: 48px; letter-spacing: 0.02em; }
-.roadmap-lift { font-size: 12px; font-weight: 600; color: var(--emerald); font-variant-numeric: tabular-nums; }
+/* Plain-sentence milestone (no "Day N:" prefix) — full width, check marker. */
+.roadmap-milestone-text { position: relative; padding-left: 16px; min-width: 0; }
+.roadmap-milestone-text::before { content: "✓"; position: absolute; left: 0; top: 0; color: var(--text-zinc); font-size: 10px; }
+/* Pin the lift line to the card bottom so all three columns align. */
+.roadmap-lift { font-size: 12px; font-weight: 600; color: var(--emerald); font-variant-numeric: tabular-nums; margin-top: auto; padding-top: 4px; }
 .metrics-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 18px; }
 .metrics-table th { text-align: left; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-zinc); padding: 10px 12px; background: rgba(255,255,255,0.02); border-bottom: 1px solid var(--border); }
 .metrics-table td { padding: 12px; border-bottom: 1px solid var(--border); color: var(--text-2); vertical-align: top; }

@@ -555,11 +555,11 @@ function SurvivalSparkline({ data, currentMonth }: { data: ChurnProfile; current
         </linearGradient>
       </defs>
       {[0.25, 0.5, 0.75].map((t) => (
-        <line key={t} x1={PAD_X} y1={PAD_Y + t * (H - PAD_Y * 2)} x2={W - PAD_X} y2={PAD_Y + t * (H - PAD_Y * 2)} stroke="rgba(255,255,255,0.04)" strokeWidth="1" />
+        <line key={t} x1={PAD_X} y1={PAD_Y + t * (H - PAD_Y * 2)} x2={W - PAD_X} y2={PAD_Y + t * (H - PAD_Y * 2)} stroke="rgba(255,255,255,0.04)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
       ))}
       <path d={areaPath} fill="url(#km-fill)" />
-      <path d={linePath} fill="none" stroke="rgba(96,165,250,0.95)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      <line x1={cx} y1={PAD_Y} x2={cx} y2={H - PAD_Y} stroke="rgba(255,255,255,0.18)" strokeWidth="1" strokeDasharray="2 3" />
+      <path d={linePath} fill="none" stroke="rgba(96,165,250,0.95)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      <line x1={cx} y1={PAD_Y} x2={cx} y2={H - PAD_Y} stroke="rgba(255,255,255,0.18)" strokeWidth="1" strokeDasharray="2 3" vectorEffect="non-scaling-stroke" />
       <circle cx={cx} cy={cy} r="3.5" fill="#60a5fa" stroke="rgba(0,0,0,0.55)" strokeWidth="1" />
     </svg>
   );
@@ -619,47 +619,58 @@ function ChurnProfileSection({ data, ctx, visible }: { data: ChurnProfile; ctx: 
             </div>
           </div>
         </div>
-        <div className="milestone">
-          <div className="milestone-lbl">
-            Milestone retention
-            {skippedFlat.length > 0 && (
-              <span
-                className="milestone-flat-note"
-                title={`Months ${skippedFlat.join(", ")} skipped — KM curve is flat past month ${maxObserved} (no new churn events observed beyond that point).`}
-              >
-                · curve flat past mo. {maxObserved}
-              </span>
-            )}
+        <div className="churn-side">
+          <div className="milestone">
+            <div className="milestone-lbl">
+              Milestone retention
+              {skippedFlat.length > 0 && (
+                <span
+                  className="milestone-flat-note"
+                  title={`Months ${skippedFlat.join(", ")} skipped — KM curve is flat past month ${maxObserved} (no new churn events observed beyond that point).`}
+                >
+                  · curve flat past mo. {maxObserved}
+                </span>
+              )}
+            </div>
+            <div className="milestone-grid" data-count={milestones.length}>
+              {milestones.map((m) => (
+                <div key={m.key} className="milestone-cell">
+                  <div className="milestone-cell-label">{m.label}</div>
+                  <div className="milestone-cell-val tnum" style={milestoneColor(m.val)}>{Math.round(m.val * 100)}%</div>
+                </div>
+              ))}
+            </div>
           </div>
-          <div className="milestone-grid" data-count={milestones.length}>
-            {milestones.map((m) => (
-              <div key={m.key} className="milestone-cell">
-                <div className="milestone-cell-label">{m.label}</div>
-                <div className="milestone-cell-val tnum" style={milestoneColor(m.val)}>{Math.round(m.val * 100)}%</div>
-              </div>
-            ))}
+          <div className="cohorts">
+            {data.behavior_cohorts.slice(0, 3).map((c, i) => {
+              const cid = c.cohort_id ?? (i === 0 ? "low_tenure" : i === 1 ? "medium_tenure" : "high_tenure");
+              const isFocus = cid === focusId;
+              const label = c.label ?? (cid === "low_tenure" ? "Short tenure" : cid === "high_tenure" ? "Long tenure" : "Medium tenure");
+              // characteristics often just repeats the label — only show it
+              // when it adds information.
+              const desc = c.characteristics && c.characteristics.trim().toLowerCase() !== label.trim().toLowerCase() ? c.characteristics : null;
+              return (
+                <div key={i} className={`cohort ${isFocus ? "focus" : ""}`}>
+                  <div className="cohort-info">
+                    <div className="cohort-name-row">
+                      <span className="cohort-name">{label}</span>
+                      {isFocus && <span className="chip violet chip-sm">Your focus</span>}
+                    </div>
+                    <div className="cohort-meta tnum" title={desc ?? undefined}>
+                      {c.tenure_range && `${c.tenure_range.min}–${c.tenure_range.max} mo.`}
+                      {c.tenure_range && desc && " · "}
+                      {desc}
+                    </div>
+                  </div>
+                  <div className="cohort-nums">
+                    <span className="cohort-size tnum">{c.size.toLocaleString()}</span>
+                    <span className={`cohort-retention tnum ${c.retention_rate < 0.7 ? "warn" : ""}`}>{Math.round(c.retention_rate * 100)}% retention</span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
-      </div>
-      <div className="cohorts">
-        {data.behavior_cohorts.slice(0, 3).map((c, i) => {
-          const cid = c.cohort_id ?? (i === 0 ? "low_tenure" : i === 1 ? "medium_tenure" : "high_tenure");
-          const isFocus = cid === focusId;
-          return (
-            <div key={i} className={`cohort ${isFocus ? "focus" : ""}`}>
-              {isFocus && <span className="chip violet chip-sm focus-pill">Your focus</span>}
-              <div className="cohort-head">
-                <div className="cohort-name">{c.label ?? (cid === "low_tenure" ? "Short tenure" : cid === "high_tenure" ? "Long tenure" : "Medium tenure")}</div>
-                {c.tenure_range && <div className="cohort-meta tnum">{c.tenure_range.min}–{c.tenure_range.max} mo.</div>}
-              </div>
-              <div className="cohort-stats">
-                <span className="cohort-size tnum">{c.size.toLocaleString()}</span>
-                <span className={`cohort-retention tnum ${c.retention_rate < 0.7 ? "warn" : ""}`}>{Math.round(c.retention_rate * 100)}% retention</span>
-              </div>
-              <div className="cohort-desc">{c.characteristics}</div>
-            </div>
-          );
-        })}
       </div>
     </section>
   );
@@ -1334,26 +1345,18 @@ function StrategySection({ data, ctx, visible }: { data: Playbook; ctx: Ctx; vis
         </span>
       </div>
       <div className="exec-summary">
-        <div className="stat">
-          <div className="stat-label">Problems identified</div>
-          <div className="stat-value tnum">{data.executive_summary.total_problems_identified}</div>
-          <div className="stat-sub">ranked by impact</div>
-        </div>
-        <div className="stat">
-          <div className="stat-label">Projected lift</div>
-          <div className="stat-value emerald tnum">{data.executive_summary.total_projected_retention_lift}</div>
-          <div className="stat-sub tnum">conf. {data.executive_summary.confidence_level}</div>
-        </div>
-        <div className="stat">
-          <div className="stat-label">Timeline</div>
-          <div className="stat-value tnum">{data.executive_summary.estimated_timeline}</div>
-          <div className="stat-sub">end-to-end</div>
-        </div>
-        <div className="stat">
-          <div className="stat-label">Budget</div>
-          <div className="stat-value tnum">{data.executive_summary.estimated_budget}</div>
-          <div className="stat-sub">people + tech + paid</div>
-        </div>
+        {([
+          { label: "Problems identified", value: String(data.executive_summary.total_problems_identified ?? "—"), cls: "", sub: "ranked by impact" },
+          { label: "Projected lift", value: data.executive_summary.total_projected_retention_lift ?? "—", cls: "emerald", sub: `conf. ${data.executive_summary.confidence_level}` },
+          { label: "Timeline", value: data.executive_summary.estimated_timeline ?? "—", cls: "", sub: "end-to-end" },
+          { label: "Budget", value: (data.executive_summary.estimated_budget ?? "—").replace(/(\d)\s*[-–—]\s*\$/, "$1–$$"), cls: "", sub: "people + tech + paid" },
+        ] as const).map((s) => (
+          <div className="stat" key={s.label}>
+            <div className="stat-label">{s.label}</div>
+            <div className={`stat-value tnum ${s.cls} ${s.value.length > 12 ? "sm" : ""}`}>{s.value}</div>
+            <div className="stat-sub tnum">{s.sub}</div>
+          </div>
+        ))}
       </div>
       <div style={{ marginBottom: 14 }}>
         {(data.problems_and_solutions ?? []).map((p, i) => <ProblemCard key={i} p={p} ctx={ctx} defaultOpen={i === 0} />)}
@@ -1372,12 +1375,23 @@ function StrategySection({ data, ctx, visible }: { data: Playbook; ctx: Ctx; vis
                 <ul className="roadmap-goals">{(ph.p!.goals ?? []).map((g, i) => <li key={i}>{g}</li>)}</ul>
                 {ph.p!.key_milestones && ph.p!.key_milestones.length > 0 && (
                   <div className="roadmap-milestones">
+                    <div className="roadmap-milestones-lbl">Milestones</div>
                     {ph.p!.key_milestones.map((m, i) => {
-                      const parts = m.split(":");
+                      // Only treat the prefix as a day/week marker when it's
+                      // short — plain-sentence milestones render full-width.
+                      const ci = m.indexOf(":");
+                      const day = ci > 0 ? m.slice(0, ci).trim() : "";
+                      const hasDay = ci > 0 && day.length <= 10;
                       return (
                         <div className="roadmap-milestone" key={i}>
-                          <span className="roadmap-milestone-day">{parts[0]}</span>
-                          <span>{parts.slice(1).join(":").trim()}</span>
+                          {hasDay ? (
+                            <>
+                              <span className="roadmap-milestone-day">{day}</span>
+                              <span>{m.slice(ci + 1).trim()}</span>
+                            </>
+                          ) : (
+                            <span className="roadmap-milestone-text">{m}</span>
+                          )}
                         </div>
                       );
                     })}
