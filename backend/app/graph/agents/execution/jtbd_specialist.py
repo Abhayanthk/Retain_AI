@@ -90,10 +90,12 @@ Business context:
 - Industry: {industry}
 - Stage: {stage}
 - Can ship product changes: {can_ship}
+- Product has a natural completion point (job can be "done"): {has_completion_point}
 - Human clarifications: {hitl_answers}
 
 Instructions:
 - Focus identified_jobs on the priority segment.
+- If the product has a completion point ("Yes"), churn after completion may be healthy — separate "job done" churn from failure churn. If "No", frame jobs as ongoing and target habit loops.
 - If priority_segment contains "Newest customers" or "first 90 days", weight functional onboarding jobs highest.
 - If priority_segment is "High-value / enterprise", focus on social and strategic jobs.
 - For each top segment listed, name at least one job that segment is failing to get done.
@@ -120,7 +122,9 @@ Constraints: {constraints}
         if top_segments:
             segments_str = "\n".join(
                 f"- {s['segment_id']} (size={s['size']}, churn={s['churn_rate']*100:.1f}%, "
-                f"descriptor='{s['descriptor']}')"
+                f"descriptor='{s['descriptor']}'"
+                + (", statistically significant" if s.get('significant') else '')
+                + ")"
                 for s in top_segments
             )
         else:
@@ -137,6 +141,7 @@ Constraints: {constraints}
                 industry=q.get("business_context", q.get("industry", "")),
                 stage=q.get("company_stage", ""),
                 can_ship=q.get("can_ship_changes", "Unknown"),
+                has_completion_point=q.get("has_completion_point", "Unknown"),
                 hitl_answers=json.dumps(hitl_answers) if hitl_answers else "None provided",
                 causes=json.dumps(verified_causes),
                 top_segments=segments_str,

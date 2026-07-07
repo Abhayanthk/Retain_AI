@@ -95,15 +95,19 @@ def safe_llm_invoke(llm, schema, prompt_text: str, agent_name: str = "Unknown"):
     import re
 
     # ── Attempt 1: Structured output (function calling) ──────────────
+    fallback_reason = None
     try:
         structured_llm = llm.with_structured_output(schema)
         result = structured_llm.invoke(prompt_text)
         if result is not None:
             return result
-    except Exception:
-        pass  # Fall through to raw parsing
+        fallback_reason = "structured output returned None"
+    except Exception as e:
+        fallback_reason = f"{type(e).__name__}: {str(e)[:120]}"
 
     # ── Attempt 2: Raw invoke + JSON extraction ──────────────────────
+    # This is a full second LLM call — log it so silent 2x latency/cost is visible.
+    print(f"[safe_llm_invoke] {agent_name}: falling back to raw parse ({fallback_reason})", flush=True)
     raw_response = llm.invoke(prompt_text)
     content = extract_llm_text(raw_response.content)
 

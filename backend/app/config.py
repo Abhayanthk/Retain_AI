@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from typing import Any, Literal
 
 from dotenv import load_dotenv
@@ -41,9 +42,24 @@ _GROQ_KEYS:   list[str] = _discover_keys("GROQ_API_KEY")
 
 # ── State ────────────────────────────────────────────────────────────────
 
+# Rate-limited keys revive after this many seconds — provider RPM windows
+# reset in ~60s, so a permanently-dead key just shrinks the pool for nothing.
+_DEAD_KEY_COOLDOWN_SECONDS = 75.0
+
 _lock = threading.Lock()
 _counters: dict[str, int] = {"gemini": 0, "groq": 0}
-_dead_keys: dict[str, set[int]] = {"gemini": set(), "groq": set()}
+_dead_keys: dict[str, dict[int, float]] = {"gemini": {}, "groq": {}}  # idx → death timestamp
+
+
+def _is_dead(provider: str, idx: int) -> bool:
+    """True if key is inside its cool-down window; expired entries are purged."""
+    died_at = _dead_keys[provider].get(idx)
+    if died_at is None:
+        return False
+    if time.monotonic() - died_at >= _DEAD_KEY_COOLDOWN_SECONDS:
+        del _dead_keys[provider][idx]
+        return False
+    return True
 
 
 def _pool(provider: str) -> list[str]:
@@ -59,9 +75,9 @@ def _next_live_idx(provider: str) -> int:
         for _ in range(len(pool)):
             idx = _counters[provider] % len(pool)
             _counters[provider] += 1
-            if idx not in _dead_keys[provider]:
+            if not _is_dead(provider, idx):
                 return idx
-        # All marked dead — reset cool-down and try fresh
+        # All inside cool-down — reset and try fresh
         _dead_keys[provider].clear()
         idx = _counters[provider] % len(pool)
         _counters[provider] += 1
@@ -151,7 +167,7 @@ class FailoverLLM:
                     raise
                 with _lock:
                     if self._idx is not None:
-                        _dead_keys[self.provider].add(self._idx)
+                        _dead_keys[self.provider][self._idx] = time.monotonic()
                 print(f"[LLM Factory] {self.provider} slot {self._idx + 1} hit rate limit → rotating ({attempt + 1}/{pool_size})")
                 self._rotate()
         raise RuntimeError(f"All {self.provider} API keys exhausted (rate-limited).") from last_err
@@ -197,6 +213,6 @@ def get_llm(
 def pool_status() -> dict[str, dict[str, Any]]:
     """Debug helper — current pool size, counters, dead keys."""
     return {
-        "gemini": {"size": len(_GEMINI_KEYS), "counter": _counters["gemini"], "dead": sorted(_dead_keys["gemini"])},
-        "groq":   {"size": len(_GROQ_KEYS),   "counter": _counters["groq"],   "dead": sorted(_dead_keys["groq"])},
+        "gemini": {"size": len(_GEMINI_KEYS), "counter": _counters["gemini"], "dead": sorted(_dead_keys["gemini"].keys())},
+        "groq":   {"size": len(_GROQ_KEYS),   "counter": _counters["groq"],   "dead": sorted(_dead_keys["groq"].keys())},
     }

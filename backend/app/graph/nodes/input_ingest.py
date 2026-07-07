@@ -47,7 +47,9 @@ def input_ingest_node(state: RetentionGraphState) -> dict:
         tenure_col = next((cols_lower[k] for k in cols_lower if 'tenure' in k or 'months_active' in k or k == 'months'), None)
         usage_col = next((cols_lower[k] for k in cols_lower if 'usage' in k or 'logins' in k), None)
         support_col = next((cols_lower[k] for k in cols_lower if 'support' in k or 'tickets' in k), None)
-        plan_col = next((cols_lower[k] for k in cols_lower if 'plan' in k or 'contract' in k), None)
+        plan_col = next((cols_lower[k] for k in cols_lower if 'plan' in k), None) \
+            or next((cols_lower[k] for k in cols_lower if 'contract' in k), None)
+        contract_col = next((cols_lower[k] for k in cols_lower if 'contract' in k and cols_lower[k] != plan_col), None)
         churn_col = get_churn_column(df)
 
         input_context = {
@@ -60,6 +62,7 @@ def input_ingest_node(state: RetentionGraphState) -> dict:
                 "usage": usage_col,
                 "support": support_col,
                 "plan": plan_col,
+                "contract": contract_col,
                 "churn": churn_col,
             },
             "business_context": questionnaire.get("business_context", ""),

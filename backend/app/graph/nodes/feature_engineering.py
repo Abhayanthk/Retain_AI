@@ -94,15 +94,49 @@ def feature_engineering_node(state: RetentionGraphState) -> dict:
 
         # 5. Predictive Churn Modeling (Survival Analysis - CoxPH)
         try:
-            churn_col = detected.get("churn") or get_churn_column(df)       
+            churn_col = detected.get("churn") or get_churn_column(df)
             if churn_col and tenure_col and numeric_cols:
-                # Ensure churn and tenure are not duplicated in our numeric features list
-                features = [c for c in numeric_cols if c not in [churn_col, tenure_col]]
-                
+                # Ensure churn and tenure are not duplicated in our numeric features list.
+                # Also drop ID-like columns: the detected customer_id plus any numeric
+                # column that is near-unique (>90% distinct) — those are identifiers,
+                # not behavior, and produce garbage hazard ratios.
+                id_col = detected.get("customer_id")
+                features = []
+                for c in numeric_cols:
+                    if c in (churn_col, tenure_col, id_col):
+                        continue
+                    nunique = df[c].nunique(dropna=True)
+                    if len(df) > 20 and nunique / max(1, df[c].count()) > 0.9:
+                        continue
+                    features.append(c)
+
+                # One-hot encode low-cardinality categoricals (plan tier, contract
+                # length, ...) so CoxPH surfaces hazard ratios like
+                # "Contract Length=Monthly" — pure feature engineering, no LLM cost.
+                import pandas as pd
+                cat_cols = [
+                    c for c in df.select_dtypes(include=["object", "category"]).columns
+                    if c not in (churn_col, tenure_col, id_col)
+                    and 2 <= df[c].nunique(dropna=True) <= 6
+                ]
+                df_model = df[features + cat_cols + [churn_col, tenure_col]].copy()
+                if cat_cols:
+                    df_model = pd.get_dummies(
+                        df_model, columns=cat_cols, drop_first=True, dtype=float,
+                        prefix_sep="=",
+                    )
+                features = [c for c in df_model.columns if c not in (churn_col, tenure_col)]
+
                 # We need some variance for CoxPH to work
-                df_ml = df[features + [churn_col, tenure_col]].dropna()
-                
-                if len(df_ml) > 10 and df_ml[churn_col].nunique() > 1:
+                df_ml = df_model.dropna()
+                # Drop features that became constant after dropna (zero variance
+                # breaks CoxPH convergence).
+                constant = [c for c in features if df_ml[c].nunique() <= 1]
+                if constant:
+                    df_ml = df_ml.drop(columns=constant)
+                    features = [c for c in features if c not in constant]
+
+                if features and len(df_ml) > 10 and df_ml[churn_col].nunique() > 1:
                     # CoxPH requires a single dataframe combining features, duration, and event.
                     cph = CoxPHFitter(penalizer=0.1) # Add small penalizer for convergence stability
                     cph.fit(df_ml, duration_col=tenure_col, event_col=churn_col)

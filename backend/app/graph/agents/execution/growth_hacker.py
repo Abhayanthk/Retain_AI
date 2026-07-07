@@ -134,7 +134,9 @@ Constraints: {constraints}
         if top_segments:
             segments_str = "\n".join(
                 f"- {s['segment_id']} (size={s['size']}, churn={s['churn_rate']*100:.1f}%, "
-                f"descriptor='{s['descriptor']}')"
+                f"descriptor='{s['descriptor']}'"
+                + (", statistically significant" if s.get('significant') else '')
+                + ")"
                 for s in top_segments
             )
         else:

@@ -67,7 +67,7 @@ def run_strategy_skeptic(state: RetentionGraphState) -> dict[str, Any]:
                 "headline_critique": "No strategies to evaluate.",
             }
 
-        llm = get_llm("gemini", temperature=0.4)
+        llm = get_llm("gemini", temperature=0.4, thinking_level="low")
 
         prompt = ChatPromptTemplate.from_template(
             """You are a Strategy Skeptic — an adversarial reviewer hired to break weak strategies BEFORE they ship.
@@ -122,9 +122,9 @@ Constraints on output values:
                 support_model=q.get("support_model", "Unknown"),
                 pricing_flex=", ".join(q.get("pricing_flexibility", [])) or "Unspecified",
                 already_tried=", ".join(q.get("retention_tactics", [])) or "None",
-                causes=json.dumps(verified_causes, indent=2)[:1200],
-                top_segments=json.dumps(top_segments, indent=2)[:1200],
-                strategies=json.dumps(merged_strategies, indent=2)[:2000],
+                causes=json.dumps(verified_causes)[:1200],
+                top_segments=json.dumps(top_segments)[:1200],
+                strategies=json.dumps(merged_strategies)[:2000],
             ),
             agent_name="StrategySkeptic",
         )

@@ -2,7 +2,7 @@
 Node 11: Strategy Critic
 ==========================
 Action:  Senior partner review with iteration control
-Tools:   Groq LLM (senior partner persona)
+Tools:   Gemini LLM (senior partner persona)
 Adds:    critic_verdict, iteration_count, criticism, feedback
 """
 
@@ -113,14 +113,14 @@ quality_score in [0, 1]. constraint_violations is an integer count."""
                 pricing_flex=", ".join(q.get("pricing_flexibility", [])) or "Unspecified",
                 already_tried=", ".join(q.get("retention_tactics", [])) or "None",
                 priority_segment=q.get("priority_segment", "all users"),
-                strategies=json.dumps(merged_strategies, indent=2)[:2000],
-                causes=json.dumps(verified_causes, indent=2)[:1000],
+                strategies=json.dumps(merged_strategies)[:2000],
+                causes=json.dumps(verified_causes)[:1000],
                 skeptic_headline=skeptic_headline,
                 skeptic_robustness=round(skeptic_robustness, 3),
                 skeptic_weak=json.dumps(skeptic_weak)[:1200],
                 skeptic_assumptions=json.dumps(skeptic_assumptions)[:800],
                 lift=lift_percent,
-                constraints=json.dumps(constrained_brief, indent=2)[:1000],
+                constraints=json.dumps(constrained_brief)[:1000],
                 feedback=json.dumps(human_feedback)[:500] if human_feedback else "No human feedback",
             ),
             agent_name="StrategyCritic",

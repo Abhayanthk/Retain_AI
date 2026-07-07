@@ -46,7 +46,10 @@ interface DriverFeature {
   feature: string; hazard_ratio: number; coef: number;
   p_value: number; direction: string; significant?: boolean;
 }
-interface StatBucketEntry { churn_rate: number; size: number; }
+interface StatBucketEntry {
+  churn_rate: number; size: number;
+  churned?: number; p_value?: number | null; significant?: boolean;
+}
 type StatBuckets = Record<string, Record<string, StatBucketEntry>>;
 interface ForensicFindingsRich {
   suspected_causes?: string[];
@@ -57,6 +60,7 @@ interface ForensicFindingsRich {
     churn_rate?: number;
     churn_by_channel?: Record<string, StatBucketEntry>;
     churn_by_plan_tier?: Record<string, StatBucketEntry>;
+    churn_by_contract?: Record<string, StatBucketEntry>;
     churn_by_support_volume?: Record<string, StatBucketEntry>;
     churn_by_usage_decile?: Record<string, StatBucketEntry>;
     churn_rate_by_tenure_bucket?: Record<string, StatBucketEntry>;
@@ -1035,6 +1039,7 @@ function bestStatForHypothesis(
   const hypKw = tokens(hypText);
   const buckets: [string, Record<string, StatBucketEntry> | undefined][] = [
     ["churn_by_plan_tier", stats.churn_by_plan_tier],
+    ["churn_by_contract", stats.churn_by_contract],
     ["churn_by_channel", stats.churn_by_channel],
     ["churn_by_support_volume", stats.churn_by_support_volume],
     ["churn_by_usage_decile", stats.churn_by_usage_decile],
@@ -1595,6 +1600,9 @@ export default function ResultsPage() {
     connectionStatus?: string;
     errorInfo?: typeof errorInfo;
     hitlSubmitted?: boolean;
+    jobStartTs?: number;
+    stageStartTs?: Record<string, number>;
+    stageEndTs?: Record<string, number>;
   }) => {
     try {
       const existing = sessionStorage.getItem(`job_${jobId}`);
@@ -1613,6 +1621,12 @@ export default function ResultsPage() {
         if (p.stagesData) { setStagesData(p.stagesData); stagesDataRef.current = p.stagesData; }
         if (p.hitlSubmitted) { setHitlSubmitted(true); hitlSubmittedRef.current = true; }
         if (p.errorInfo) setErrorInfo(p.errorInfo);
+        // Restore stage timers so a refresh doesn't reset durations to 0s /
+        // restart the active stage's clock. Must land before the stamping
+        // effect runs (same batched render as stagesData above).
+        if (typeof p.jobStartTs === "number") setJobStartTs(p.jobStartTs);
+        if (p.stageStartTs) setStageStartTs(p.stageStartTs);
+        if (p.stageEndTs) setStageEndTs(p.stageEndTs);
         if (p.connectionStatus === "complete" || p.connectionStatus === "error" || p.connectionStatus === "cancelled") {
           setConnectionStatus(p.connectionStatus);
           restoredStatus = p.connectionStatus;
@@ -1761,8 +1775,20 @@ export default function ResultsPage() {
     }
     if (startChanged) setStageStartTs(nextStart);
     if (endChanged) setStageEndTs(nextEnd);
+    if (startChanged || endChanged) {
+      writeSnapshot({
+        ...(startChanged ? { stageStartTs: nextStart } : {}),
+        ...(endChanged ? { stageEndTs: nextEnd } : {}),
+      });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pipelineState]);
+
+  /* Persist the job-start timestamp so total-elapsed survives refresh. */
+  useEffect(() => {
+    if (jobStartTs != null) writeSnapshot({ jobStartTs });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobStartTs]);
 
   /* Actions */
   const handleHitlSubmit = async (answers: string[]) => {

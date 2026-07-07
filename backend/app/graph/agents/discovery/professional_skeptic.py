@@ -58,7 +58,7 @@ def run_professional_skeptic(
         pattern_found = pattern_findings.get("patterns_found", [])
         q = state.get("questionnaire", {})
 
-        llm = get_llm("gemini", temperature=0.4)
+        llm = get_llm("gemini", temperature=0.4, thinking_level="low")
 
         skeptic_prompt = ChatPromptTemplate.from_template(
             """You are a Professional Skeptic reviewing churn analysis findings.
@@ -68,6 +68,7 @@ Your job is to challenge assumptions, find flaws, and stress-test hypotheses aga
 Priority segment: {priority_segment}
 Goal: {goal}
 Tactics already tried (so retread proposals are suspect): {already_tried}
+Analyst notes / caveats (a cause that ignores these is weak — check each hypothesis against them): {edge_cases}
 
 ## Forensic Findings
 Suspected causes: {causes}
@@ -96,9 +97,10 @@ robustness_scores keys: the suspected cause strings. All numeric scores in [0, 1
                 priority_segment=q.get("priority_segment", "all users"),
                 goal=q.get("goal", "Reduce churn"),
                 already_tried=", ".join(q.get("retention_tactics", [])) or "None",
+                edge_cases=" | ".join(str(e) for e in (q.get("edge_cases") or [])) or "None",
                 causes=json.dumps(forensic_causes),
                 confidence=json.dumps(forensic_confidence),
-                evidence=json.dumps(statistical_evidence)[:800],
+                evidence=json.dumps(statistical_evidence)[:1400],
                 sequences=json.dumps(pattern_sequences[:3]),
                 patterns=json.dumps([p.get("pattern", "") if isinstance(p, dict) else "" for p in pattern_found[:5]]),
             ),

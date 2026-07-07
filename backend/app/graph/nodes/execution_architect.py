@@ -156,6 +156,9 @@ Named competitors: {competitors}
 Churn destination: {churn_dest}
 Already tried (do NOT re-propose): {already_tried}
 
+## Analyst Notes (from the company — ground-truth caveats; the playbook must not contradict these)
+{edge_cases}
+
 ## Verified Root Causes (from data analysis)
 {root_causes}
 
@@ -240,15 +243,16 @@ Field guidance:
 - Use total_projected_retention_lift = "{lift}%"."""
         )
 
-        root_causes_str = json.dumps(verified_root_causes, indent=2)
-        strategies_str = json.dumps(merged_strategies, indent=2)
+        root_causes_str = json.dumps(verified_root_causes)
+        strategies_str = json.dumps(merged_strategies)
         dossier_str = (
-            json.dumps(evidence_dossier, indent=2)[:2500]
+            json.dumps(evidence_dossier)[:2500]
             if evidence_dossier
             else "(no dossier — fall back to root_causes + strategies)"
         )
+        edge_cases_str = " | ".join(str(e) for e in (questionnaire.get("edge_cases") or [])) or "None"
         if competitor_research.get("matched"):
-            competitor_str = json.dumps(competitor_research, indent=2)[:1500]
+            competitor_str = json.dumps(competitor_research)[:1500]
         else:
             competitor_str = "(churn_destination is not a known competitor — skip counter-positioning specifics)"
 
@@ -257,6 +261,7 @@ Field guidance:
                 f"- {s['segment_id']} (size={s['size']}, churn={s['churn_rate']*100:.1f}%, "
                 f"retention={s['retention_rate']*100:.1f}%, descriptor='{s['descriptor']}'"
                 + (f", dominant_cause='{s['dominant_cause']}'" if s.get('dominant_cause') else '')
+                + (", statistically significant" if s.get('significant') else '')
                 + ")"
                 for s in top_segments
             )
@@ -289,6 +294,7 @@ Inputs you must reason over:
 - Simulation: lift={lift}% with intervention_impacts {simulations}
 - Critic verdict + feedback: {criticism}
 - Competitor research (only if matched): {competitor_research}
+- Analyst notes (ground-truth caveats from the company): {edge_cases}
 - Hard operational constraints: can_ship={can_ship}, support_model={support_model},
   pricing_flex={pricing_flex}, timeline={timeline}, already_tried={already_tried}.
 
@@ -316,10 +322,11 @@ Output: continuous prose. Max ~450 words. Be specific. No fluff."""
                     top_segments=top_segments_str[:800],
                     drivers=drivers_str[:600],
                     lift=lift_percent,
-                    simulations=json.dumps(simulations.get("intervention_impacts", []), indent=2)[:800]
+                    simulations=json.dumps(simulations.get("intervention_impacts", []))[:800]
                         if simulations else "No simulation data",
-                    criticism=json.dumps(criticism, indent=2)[:600] if criticism else "No critic feedback",
+                    criticism=json.dumps(criticism)[:600] if criticism else "No critic feedback",
                     competitor_research=competitor_str[:600],
+                    edge_cases=edge_cases_str,
                     can_ship=questionnaire.get("can_ship_changes", "Unknown"),
                     support_model=questionnaire.get("support_model", "Unknown"),
                     pricing_flex=", ".join(questionnaire.get("pricing_flexibility", [])) or "Unspecified",
@@ -348,19 +355,22 @@ Output: continuous prose. Max ~450 words. Be specific. No fluff."""
                 competitors=competitors_str or "None named",
                 churn_dest=questionnaire.get("churn_destination", "Unknown"),
                 already_tried=", ".join(questionnaire.get("retention_tactics", [])) or "None",
+                edge_cases=edge_cases_str,
                 root_causes=root_causes_str,
                 top_segments=top_segments_str,
                 drivers=drivers_str,
-                economist=json.dumps(economist_output, indent=2)[:1500],
-                jtbd=json.dumps(jtbd_output, indent=2)[:1500],
-                growth=json.dumps(growth_output, indent=2)[:1500],
+                # merged_strategies + dossier already carry the operational fields —
+                # per-agent dumps are context color, not the source of truth.
+                economist=json.dumps(economist_output)[:700],
+                jtbd=json.dumps(jtbd_output)[:700],
+                growth=json.dumps(growth_output)[:700],
                 strategies=strategies_str,
                 competitor_research=competitor_str,
                 dossier=dossier_str,
                 lift=lift_percent,
-                simulations=json.dumps(simulations, indent=2)[:1000] if simulations else "No simulation data",
-                constraints=json.dumps(constrained_brief, indent=2)[:1000] if constrained_brief else "No constraints",
-                criticism=json.dumps(criticism, indent=2)[:500] if criticism else "No critic feedback",
+                simulations=json.dumps(simulations)[:1000] if simulations else "No simulation data",
+                constraints=json.dumps(constrained_brief)[:1000] if constrained_brief else "No constraints",
+                criticism=json.dumps(criticism)[:500] if criticism else "No critic feedback",
                 hitl_answers=json.dumps(hitl_answers)[:500] if hitl_answers else "None provided",
                 reasoning_trace=reasoning_trace[:3000],
             ),
@@ -407,7 +417,12 @@ Output: continuous prose. Max ~450 words. Be specific. No fluff."""
 
         # Enrich with metadata
         playbook["created_date"] = datetime.now().isoformat()
-        playbook["company"] = input_context.get("industry", "SaaS")
+        # questionnaire.industry is never collected by the form — business_model is.
+        playbook["company"] = (
+            input_context.get("industry")
+            or questionnaire.get("business_model")
+            or "SaaS"
+        )
         playbook["estimated_total_lift"] = round(lift_percent, 1)
         # F12: surface pass-1 trace so the UI can show "why this playbook".
         playbook["reasoning_trace"] = reasoning_trace

@@ -99,6 +99,7 @@ Business context:
 - Goal: {top_goal}
 - Timeline: {timeline}
 - Stage: {stage}
+- Revenue model: {revenue_model}
 - Support model: {support_model}
 - Can ship product changes: {can_ship}
 - Already tried: {already_tried}
@@ -139,6 +140,7 @@ Constraints: {constraints}
                 f"- {s['segment_id']} (size={s['size']}, churn={s['churn_rate']*100:.1f}%, "
                 f"retention={s['retention_rate']*100:.1f}%, descriptor='{s['descriptor']}'"
                 + (f", dominant_cause='{s['dominant_cause']}'" if s.get('dominant_cause') else '')
+                + (", statistically significant" if s.get('significant') else '')
                 + ")"
                 for s in top_segments
             )
@@ -162,6 +164,7 @@ Constraints: {constraints}
                 top_goal=q.get("goal", "Reduce churn rate"),
                 timeline=q.get("timeline", ""),
                 stage=q.get("company_stage", ""),
+                revenue_model=q.get("revenue_model", "Unknown"),
                 support_model=q.get("support_model", ""),
                 can_ship=q.get("can_ship_changes", ""),
                 already_tried=", ".join(q.get("retention_tactics", [])) or "None",

@@ -42,6 +42,7 @@ def _best_stat_for_cause(cause_text: str, stats: dict) -> dict | None:
 
     for bucket_name in (
         "churn_by_plan_tier",
+        "churn_by_contract",
         "churn_by_channel",
         "churn_by_integration",
         "churn_by_support_volume",

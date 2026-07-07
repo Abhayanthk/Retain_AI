@@ -42,7 +42,8 @@ def hypothetical_segment_answer(
     bm = (business_model or "SaaS").strip() or "SaaS"
 
     try:
-        llm = get_llm("gemini", temperature=temperature)
+        # Low thinking: 3-sentence generation task, reasoning depth wasted here.
+        llm = get_llm("gemini", temperature=temperature, thinking_level="low")
         raw = llm.invoke(
             _HYDE_PROMPT.format(priority_segment=seg, industry=ind, business_model=bm)
         )

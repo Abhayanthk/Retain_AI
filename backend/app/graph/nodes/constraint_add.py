@@ -15,18 +15,15 @@ def constraint_add_node(state: RetentionGraphState) -> dict:
     """Apply real-world constraints to verified root causes."""
     try:
         verified_causes = state.get("verified_root_causes", [])
-        input_constraints = state.get("input_constraints", {})
         input_context = state.get("input_context", {})
 
-        # Extract constraints
-        budget = input_constraints.get("budget_constraints", "medium")
-        legal_constraints = input_constraints.get("legal_constraints", [])
-        time_range = input_constraints.get("time_range", "last_12_months")
-
+        # NOTE: budget / time_range / legal filtering removed — the form never
+        # collects those fields, so the branches could never fire. Real
+        # operational constraints (can_ship, pricing_flex, support_model) are
+        # enforced by strategy agents + critic from the questionnaire directly.
         applied_constraints = []
         feasible_interventions = []
 
-        # 1. Filter by budget feasibility
         for cause in verified_causes:
             cause_text = cause.get("cause", "")
             confidence = cause.get("confidence", 0)
@@ -39,31 +36,7 @@ def constraint_add_node(state: RetentionGraphState) -> dict:
             else:
                 intervention_cost = "high"
 
-            # Check budget
-            budget_ok = True
-            if budget == "low" and intervention_cost in ["medium", "high"]:
-                budget_ok = False
-                applied_constraints.append({
-                    "constraint": "Budget constraint (low budget)",
-                    "cause": cause_text,
-                    "outcome": "Eliminated",
-                })
-            elif budget == "medium" and intervention_cost == "high":
-                budget_ok = False
-
-            # 2. Check legal constraints
-            legal_ok = True
-            for legal_issue in legal_constraints:
-                if "gdpr" in legal_issue.lower() and "tracking" in cause_text.lower():
-                    legal_ok = False
-                    applied_constraints.append({
-                        "constraint": f"Legal constraint: {legal_issue}",
-                        "cause": cause_text,
-                        "outcome": "Requires legal review",
-                    })
-
-            # 3. Include if feasible
-            if budget_ok and legal_ok and confidence > 0.45:
+            if confidence > 0.45:
                 feasible_interventions.append({
                     "cause": cause_text,
                     "confidence": confidence,

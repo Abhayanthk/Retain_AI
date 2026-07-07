@@ -19,7 +19,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from app.graph.state import RetentionGraphState
 from app.graph.utils import safe_llm_invoke
 from app.config import get_llm
-from app.shared import active_streams
+from app.shared import active_streams, push_event
 
 HITL_TIMEOUT_SECONDS = 300
 
@@ -58,7 +58,7 @@ async def adaptive_hitl_node(state: RetentionGraphState, config: RunnableConfig)
         priority_segment = q.get("priority_segment", "")
         competitors = q.get("competitors", [])
 
-        llm = get_llm("gemini", temperature=0.3)
+        llm = get_llm("gemini", temperature=0.3, thinking_level="low")
 
         prompt = ChatPromptTemplate.from_template(
             """You generate targeted clarification questions for a retention analyst.
@@ -98,7 +98,7 @@ Rules:
         # ── Emit questions over SSE and wait for human answers ──────────
         answers = {}
         if stream:
-            await stream["queue"].put({
+            push_event(job_id, {
                 "type": "hitl_questions_ready",
                 "message": "Clarification needed before generating strategies.",
                 "data": {"questions": hitl_questions},

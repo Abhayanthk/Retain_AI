@@ -133,6 +133,10 @@ def _derive_signals(stats: dict, behavior_curves: dict) -> List[str]:
     if plan_rates and (max(plan_rates) - min(plan_rates)) > 0.15:
         signals.extend(["plan_tier_churn", "price_sensitivity"])
 
+    contract_rates = _extract_rates(stats.get("churn_by_contract"))
+    if contract_rates and (max(contract_rates) - min(contract_rates)) > 0.15:
+        signals.extend(["contract_cadence_churn", "commitment_gap", "price_sensitivity"])
+
     support_buckets = stats.get("churn_by_support_volume", {}) or {}
     high_support = support_buckets.get("high_4_plus", {})
     no_support = support_buckets.get("none_0", {})
@@ -175,6 +179,18 @@ def _churn_rate_for_subset(df, mask, churn_col):
     return round(float(df.loc[mask, churn_col].mean()), 3)
 
 
+def _bucket_entry(df, mask, churn_col) -> dict | None:
+    """Build one {churn_rate, size, churned} bucket from a boolean mask."""
+    rate = _churn_rate_for_subset(df, mask, churn_col)
+    if rate is None:
+        return None
+    return {
+        "churn_rate": rate,
+        "size": int(mask.sum()),
+        "churned": int(df.loc[mask, churn_col].sum()),
+    }
+
+
 def _bucket_churn(df, col, churn_col, buckets):
     """Compute churn rate for each (label, lo, hi) bucket of a numeric column."""
     out = {}
@@ -184,10 +200,45 @@ def _bucket_churn(df, col, churn_col, buckets):
             mask = series >= lo
         else:
             mask = (series >= lo) & (series < hi)
-        rate = _churn_rate_for_subset(df, mask, churn_col)
-        if rate is not None:
-            out[label] = {"churn_rate": rate, "size": int(mask.sum())}
+        entry = _bucket_entry(df, mask, churn_col)
+        if entry is not None:
+            out[label] = entry
     return out
+
+
+def _apply_significance(stats: dict, total_churned: int, total_n: int) -> None:
+    """Annotate every stat bucket with a two-proportion z-test (bucket vs rest).
+
+    Adds `p_value` and `significant` (p < 0.05) in place. Pure math — gives the
+    LLM a hard signal for which buckets are real effects vs noise, so it stops
+    building causes on statistically flat segments.
+    """
+    from scipy.stats import norm
+
+    for bucket_name, bucket in stats.items():
+        if not isinstance(bucket, dict):
+            continue
+        for payload in bucket.values():
+            if not isinstance(payload, dict) or "churned" not in payload or "size" not in payload:
+                continue
+            n1 = payload["size"]
+            x1 = payload["churned"]
+            n2 = total_n - n1
+            x2 = total_churned - x1
+            if n1 < 2 or n2 < 2:
+                payload["p_value"] = None
+                payload["significant"] = False
+                continue
+            p_pool = (x1 + x2) / (n1 + n2)
+            se = (p_pool * (1 - p_pool) * (1 / n1 + 1 / n2)) ** 0.5
+            if se == 0:
+                payload["p_value"] = None
+                payload["significant"] = False
+                continue
+            z = (x1 / n1 - x2 / n2) / se
+            p_val = float(2 * norm.sf(abs(z)))
+            payload["p_value"] = round(p_val, 4)
+            payload["significant"] = p_val < 0.05
 
 
 def run_forensic_detective(state: RetentionGraphState, job_id: str | None = None) -> dict[str, Any]:
@@ -217,12 +268,14 @@ def run_forensic_detective(state: RetentionGraphState, job_id: str | None = None
         usage_col = detected.get("usage")
         support_col = detected.get("support")
         plan_col = detected.get("plan")
+        contract_col = detected.get("contract")
 
         stats = {
             "churn_rate": 0,
             "churn_by_channel": {},
             "churn_by_integration": {},
             "churn_by_plan_tier": {},
+            "churn_by_contract": {},
             "churn_by_support_volume": {},
             "churn_by_usage_decile": {},
             "time_to_churn_distribution": {},
@@ -233,29 +286,32 @@ def run_forensic_detective(state: RetentionGraphState, job_id: str | None = None
         if churn_col:
             stats["churn_rate"] = round(float(df[churn_col].mean()), 3)
 
+            def _categorical_bucket(col: str) -> dict:
+                out = {}
+                for value in df[col].dropna().unique():
+                    entry = _bucket_entry(df, df[col] == value, churn_col)
+                    if entry is not None:
+                        out[str(value)] = entry
+                return out
+
             # 1. Churn by acquisition channel (already existed)
             acq_col = next((c for c in df.columns if 'acquisition' in c.lower() or 'channel' in c.lower()), None)
             if acq_col:
-                for channel in df[acq_col].unique():
-                    rate = df[df[acq_col] == channel][churn_col].mean()
-                    size = int((df[acq_col] == channel).sum())
-                    stats["churn_by_channel"][str(channel)] = {"churn_rate": round(float(rate), 3), "size": size}
+                stats["churn_by_channel"] = _categorical_bucket(acq_col)
 
             # 2. Churn by integration status (already existed)
             int_col = next((c for c in df.columns if 'integration' in c.lower()), None)
             if int_col:
-                for status in df[int_col].unique():
-                    rate = df[df[int_col] == status][churn_col].mean()
-                    size = int((df[int_col] == status).sum())
-                    stats["churn_by_integration"][str(status)] = {"churn_rate": round(float(rate), 3), "size": size}
+                stats["churn_by_integration"] = _categorical_bucket(int_col)
 
             # 3. Churn by plan tier — pricing-tier concentration is a key diagnostic
             if plan_col and plan_col in df.columns:
-                for plan in df[plan_col].dropna().unique():
-                    mask = df[plan_col] == plan
-                    rate = _churn_rate_for_subset(df, mask, churn_col)
-                    if rate is not None:
-                        stats["churn_by_plan_tier"][str(plan)] = {"churn_rate": rate, "size": int(mask.sum())}
+                stats["churn_by_plan_tier"] = _categorical_bucket(plan_col)
+
+            # 3b. Churn by contract cadence (monthly/quarterly/annual) — commitment
+            # length is often the single strongest churn split in subscription data
+            if contract_col and contract_col in df.columns:
+                stats["churn_by_contract"] = _categorical_bucket(contract_col)
 
             # 4. Churn by support ticket volume (0 / 1-3 / 4+) — friction signal
             if support_col and support_col in df.columns:
@@ -284,14 +340,13 @@ def run_forensic_detective(state: RetentionGraphState, job_id: str | None = None
                         ]
                         for label, lo, hi in usage_buckets:
                             mask = (df[usage_col] >= lo) & (df[usage_col] < hi)
-                            rate = _churn_rate_for_subset(df, mask, churn_col)
-                            if rate is not None:
-                                stats["churn_by_usage_decile"][label] = {
-                                    "churn_rate": rate,
-                                    "size": int(mask.sum()),
-                                    "usage_range": [round(float(lo), 2) if np.isfinite(lo) else None,
-                                                    round(float(hi), 2) if np.isfinite(hi) else None],
-                                }
+                            entry = _bucket_entry(df, mask, churn_col)
+                            if entry is not None:
+                                entry["usage_range"] = [
+                                    round(float(lo), 2) if np.isfinite(lo) else None,
+                                    round(float(hi), 2) if np.isfinite(hi) else None,
+                                ]
+                                stats["churn_by_usage_decile"][label] = entry
                 except Exception:
                     pass
 
@@ -323,6 +378,16 @@ def run_forensic_detective(state: RetentionGraphState, job_id: str | None = None
                     )
                 except Exception:
                     pass
+
+        # Annotate every bucket with two-proportion z-test significance (bucket
+        # vs rest). Pure math, zero LLM cost — downstream prompts tell the LLM
+        # to only build causes on significant buckets.
+        if churn_col:
+            _apply_significance(
+                stats,
+                total_churned=int(df[churn_col].sum()),
+                total_n=int(df[churn_col].count()),
+            )
 
         # Pull CoxPH driver features computed in feature_engineering — biggest depth win
         feature_store = state.get("feature_store", {}) or {}
@@ -371,12 +436,19 @@ Goal: {goal}
 Priority segment: {priority_segment}
 Named competitors: {competitors}
 Churn destination: {churn_destination}
+Churn definition used by this business: {churn_definition}
+Top acquisition channels (self-reported): {top_channels}
+Analyst notes / caveats (ground truth — these may invalidate naive readings of the stats): {edge_cases}
 
 ── Dataset statistics ──
+Each bucket = {{churn_rate, size, churned, p_value, significant}}. `significant` is a
+two-proportion z-test (bucket vs rest, p<0.05). Do NOT build a cause primarily on a
+bucket with significant=false — treat those as noise.
 Overall Churn Rate: {churn_rate}
 Churn by Acquisition Channel: {churn_by_channel}
 Churn by Integration Status: {churn_by_integration}
 Churn by Plan Tier: {churn_by_plan_tier}
+Churn by Contract Cadence: {churn_by_contract}
 Churn by Support Ticket Volume: {churn_by_support_volume}
 Churn by Usage Decile: {churn_by_usage_decile}
 Churn Rate by Tenure Bucket: {churn_rate_by_tenure_bucket}
@@ -401,16 +473,25 @@ Requirements:
         competitors_val = q.get("competitors", [])
         competitors_str = ", ".join(competitors_val) if isinstance(competitors_val, list) else str(competitors_val or "")
 
+        edge_cases_val = q.get("edge_cases", []) or []
+        edge_cases_str = " | ".join(str(e) for e in edge_cases_val) if isinstance(edge_cases_val, list) else str(edge_cases_val)
+        top_channels_val = q.get("top_channels", []) or []
+        top_channels_str = ", ".join(top_channels_val) if isinstance(top_channels_val, list) else str(top_channels_val)
+
         formatted_prompt = candidate_prompt.format(
             business_model=q.get("business_model", "SaaS"),
             goal=q.get("goal", "Reduce churn"),
             priority_segment=q.get("priority_segment", "all users"),
             competitors=competitors_str or "None named",
             churn_destination=q.get("churn_destination", "Unknown"),
+            churn_definition=q.get("churn_definition", "Not specified"),
+            top_channels=top_channels_str or "Not specified",
+            edge_cases=edge_cases_str or "None",
             churn_rate=f"{stats['churn_rate']:.1%}",
             churn_by_channel=json.dumps(stats["churn_by_channel"]),
             churn_by_integration=json.dumps(stats["churn_by_integration"]),
             churn_by_plan_tier=json.dumps(stats["churn_by_plan_tier"]),
+            churn_by_contract=json.dumps(stats["churn_by_contract"]),
             churn_by_support_volume=json.dumps(stats["churn_by_support_volume"]),
             churn_by_usage_decile=json.dumps(stats["churn_by_usage_decile"]),
             churn_rate_by_tenure_bucket=json.dumps(stats["churn_rate_by_tenure_bucket"]),

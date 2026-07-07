@@ -32,7 +32,7 @@ if _onnx_cache_target.exists():
             pass
 
 from app.graph.builder import build_retention_graph
-from app.shared import active_streams, JobCancelled
+from app.shared import active_streams, push_event, JobCancelled
 from typing import Dict, Any
 
 UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "retain_ai_uploads")
@@ -52,6 +52,26 @@ def _sanitize(obj):
     return obj
 
 app = FastAPI(title="Retain AI Backend")
+
+
+@app.on_event("startup")
+def _prewarm_rag() -> None:
+    """Load Chroma + the ONNX embedder in the background at boot.
+
+    First rag query otherwise pays ~5-30s of lazy model loading mid-pipeline —
+    on Render free tier that cost recurs after every spin-down.
+    """
+    import threading
+
+    def _warm():
+        try:
+            from app.rag.store import retrieve
+            retrieve("warmup", k=1)
+            print("[startup] RAG prewarm complete", flush=True)
+        except Exception as e:
+            print(f"[startup] RAG prewarm failed (non-fatal): {e}", flush=True)
+
+    threading.Thread(target=_warm, daemon=True, name="rag-prewarm").start()
 
 app.add_middleware(
     CORSMiddleware,
@@ -97,8 +117,15 @@ async def analyze_retention_job(*args, **kwargs):
     # Define an async runner for the graph to stream updates internally
     async def execute_and_stream():
         stream = active_streams.get(job_id) if job_id else None
-        queue = stream["queue"] if stream else None
         final_state = None
+
+        def _schedule_cleanup():
+            # Keep the event history around briefly so a refresh right at
+            # completion can still replay it; frontend snapshot handles later visits.
+            try:
+                asyncio.get_running_loop().call_later(120, active_streams.pop, job_id, None)
+            except Exception:
+                active_streams.pop(job_id, None)
 
         try:
             async for state in graph.astream(
@@ -107,7 +134,7 @@ async def analyze_retention_job(*args, **kwargs):
                 stream_mode="values",
             ):
                 final_state = state
-                if not queue:
+                if not stream:
                     continue
 
                 node = state.get("current_node")
@@ -133,7 +160,7 @@ async def analyze_retention_job(*args, **kwargs):
                     else:
                         insight = "Risk model could not be trained — ensure your dataset has churn and tenure columns"
 
-                    await queue.put({
+                    push_event(job_id, {
                         "type": "risk_ready",
                         "message": "Risk analysis complete.",
                         "data": {
@@ -157,7 +184,7 @@ async def analyze_retention_job(*args, **kwargs):
 
                 elif node == "behavioral_map":
                     curves = state.get("behavior_curves", {})
-                    await queue.put({
+                    push_event(job_id, {
                         "type": "churn_profile_ready",
                         "message": "Churn profile and behavior mapping complete.",
                         "data": {
@@ -177,7 +204,7 @@ async def analyze_retention_job(*args, **kwargs):
                     q = state.get("questionnaire", {})
                     fs = state.get("feature_store", {}) or {}
                     driver_features = (fs.get("predictive_churn_risk", {}) or {}).get("driver_features", []) or []
-                    await queue.put({
+                    push_event(job_id, {
                         "type": "diagnosis_ready",
                         "message": "Core problems diagnosed.",
                         "data": {
@@ -201,7 +228,7 @@ async def analyze_retention_job(*args, **kwargs):
                 elif node == "simulation":
                     simulations = state.get("simulations", {})
                     ci = simulations.get("confidence_interval_5_95", [])
-                    await queue.put({
+                    push_event(job_id, {
                         "type": "simulation_ready",
                         "message": "Monte Carlo simulation complete.",
                         "data": {
@@ -230,7 +257,7 @@ async def analyze_retention_job(*args, **kwargs):
                     })
 
                 elif node == "execution_architect":
-                    await queue.put({
+                    push_event(job_id, {
                         "type": "solution_ready",
                         "message": "Final playbook generated.",
                         "data": {
@@ -239,23 +266,25 @@ async def analyze_retention_job(*args, **kwargs):
                         }
                     })
 
-            if queue:
-                await queue.put({"type": "complete", "message": "Analysis finished.", "data": {}})
+            if stream:
+                push_event(job_id, {"type": "complete", "message": "Analysis finished.", "data": {}})
+                _schedule_cleanup()
         except JobCancelled as e:
             print(f"[CANCEL] job {job_id} cancelled mid-pipeline", flush=True)
-            if queue:
-                await queue.put({
+            if stream:
+                push_event(job_id, {
                     "type": "cancelled",
                     "message": "Analysis cancelled by user.",
                     "data": {"job_id": job_id},
                 })
-                await queue.put({"type": "complete", "message": "Cancelled.", "data": {}})
+                push_event(job_id, {"type": "complete", "message": "Cancelled.", "data": {}})
+                _schedule_cleanup()
             return _sanitize(final_state)
         except Exception as e:
             print(f"[ERROR] pipeline failed for job {job_id}: {type(e).__name__}: {e}", flush=True)
             traceback.print_exc()
-            if queue:
-                await queue.put({
+            if stream:
+                push_event(job_id, {
                     "type": "error",
                     "message": "Analysis failed.",
                     "data": {
@@ -264,7 +293,8 @@ async def analyze_retention_job(*args, **kwargs):
                         "last_node": (final_state or {}).get("current_node"),
                     },
                 })
-                await queue.put({"type": "complete", "message": "Failed.", "data": {}})
+                push_event(job_id, {"type": "complete", "message": "Failed.", "data": {}})
+                _schedule_cleanup()
             raise
 
         return _sanitize(final_state)
@@ -315,7 +345,8 @@ async def run_analysis(
     try:
         job_id = str(uuid.uuid4())
         active_streams[job_id] = {
-            "queue": asyncio.Queue(),
+            "events": [],        # append-only history; SSE readers replay from their cursor
+            "subscribers": [],   # asyncio.Event wake signals, one per open SSE connection
             "hitl_event": asyncio.Event(),
             "hitl_answers": {},
             "cancelled": False,
@@ -335,37 +366,51 @@ async def run_analysis(
 
 @app.get("/analyze/stream/{job_id}")
 async def stream_job(job_id: str, request: Request):
-    if job_id not in active_streams:
+    stream = active_streams.get(job_id)
+    if stream is None:
         raise HTTPException(status_code=404, detail="Job not found or already completed")
 
-    queue = active_streams[job_id]["queue"]
-
     async def event_generator():
+        # Broadcast model: replay full history from cursor 0, then follow live.
+        # A page refresh gets every event again (frontend stagesData is keyed
+        # by event type, so replay is idempotent). No event is ever consumed —
+        # the old Queue design lost events into the dying connection's socket.
+        wake = asyncio.Event()
+        subscribers = stream.setdefault("subscribers", [])
+        subscribers.append(wake)
+        cursor = 0
         try:
             while True:
+                wake.clear()
+                events = stream.get("events", [])
+                terminal = False
+                while cursor < len(events):
+                    event = events[cursor]
+                    cursor += 1
+                    yield f"data: {json.dumps(event)}\n\n"
+                    # `error` and `cancelled` are followed by `complete`; treat
+                    # any of them as terminal in case the worker crashed early.
+                    if event.get("type") in ("complete", "cancelled", "error"):
+                        terminal = True
+                        break
+                if terminal:
+                    break
                 if await request.is_disconnected():
                     break
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    await asyncio.wait_for(wake.wait(), timeout=15.0)
                 except asyncio.TimeoutError:
                     # Heartbeat keeps Render / proxy from killing the idle SSE connection
                     yield ": heartbeat\n\n"
-                    continue
-
-                yield f"data: {json.dumps(event)}\n\n"
-
-                # Terminate stream on completion, cancellation, or error.
-                # `error` and `cancelled` are followed by a `complete` event from
-                # the pipeline worker; treating any of them as terminal here
-                # ensures the SSE closes even if the worker crashed before
-                # emitting `complete`.
-                if event["type"] in ("complete", "cancelled", "error"):
-                    if event["type"] == "complete":
-                        active_streams.pop(job_id, None)
-                    break
         except Exception:
             pass
-        # Do NOT pop on disconnect — queue must survive reconnects until complete
+        finally:
+            try:
+                subscribers.remove(wake)
+            except ValueError:
+                pass
+        # active_streams cleanup happens in the worker (_schedule_cleanup, 120s
+        # after `complete`) — never here, so reconnects can still replay.
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

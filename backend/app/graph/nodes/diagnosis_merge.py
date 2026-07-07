@@ -47,11 +47,14 @@ def _build_top_segments(
                 "retention_rate": retention,
                 "churn_rate": round(float(churn), 3),
                 "descriptor": f"{descriptor_prefix} = {label}",
+                "p_value": payload.get("p_value"),
+                "significant": bool(payload.get("significant", False)),
             })
 
     _add_bucket_rows(stats.get("churn_by_channel"), "channel", "Acquisition channel")
     _add_bucket_rows(stats.get("churn_by_integration"), "integration", "Integration status")
     _add_bucket_rows(stats.get("churn_by_plan_tier"), "plan_tier", "Plan tier")
+    _add_bucket_rows(stats.get("churn_by_contract"), "contract", "Contract cadence")
     _add_bucket_rows(stats.get("churn_by_support_volume"), "support", "Support ticket volume")
     _add_bucket_rows(stats.get("churn_by_usage_decile"), "usage", "Usage decile")
     _add_bucket_rows(stats.get("churn_rate_by_tenure_bucket"), "tenure", "Tenure bucket")
@@ -104,8 +107,16 @@ def _build_top_segments(
                 break
         r["dominant_cause"] = dominant
 
-    # Rank by churn impact: churn_rate * size (lost-users proxy), keep top 8
-    rows.sort(key=lambda r: r["churn_rate"] * r["size"], reverse=True)
+    # Rank by churn impact: churn_rate * size (lost-users proxy), keep top 8.
+    # Stat buckets that failed the z-test get demoted (not dropped) — rows from
+    # pattern_matcher / cohorts carry no p_value and are unaffected.
+    def _impact(r: dict) -> float:
+        base = r["churn_rate"] * r["size"]
+        if r.get("p_value") is not None and not r.get("significant", False):
+            return base * 0.6
+        return base
+
+    rows.sort(key=_impact, reverse=True)
     return rows[:8]
 
 
