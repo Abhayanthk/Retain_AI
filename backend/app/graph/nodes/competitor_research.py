@@ -86,6 +86,18 @@ def competitor_research_node(state: RetentionGraphState) -> dict:
     churn_destination = str(q.get("churn_destination", "") or "")
     competitor = _match_competitor(churn_destination)
 
+    # The form's churn-destination question is a generic radio ("To a competitor",
+    # "We don't know", ...) — no name in it. When it signals competitor loss,
+    # fall back to the named competitors list for matching.
+    if competitor is None and "competitor" in churn_destination.lower():
+        competitors_val = q.get("competitors", []) or []
+        if not isinstance(competitors_val, list):
+            competitors_val = [c.strip() for c in str(competitors_val).split(",")]
+        for name in competitors_val:
+            competitor = _match_competitor(str(name))
+            if competitor is not None:
+                break
+
     if competitor is None:
         return {
             "competitor_research_output": {
