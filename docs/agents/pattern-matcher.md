@@ -11,7 +11,7 @@ For node-level context: [`docs/nodes/pattern-matcher.md`](../nodes/pattern-match
 | | |
 |---|---|
 | Provider | Google Gemini |
-| Model ID | `gemini-3-flash-preview` |
+| Model ID | `gemini-3.1-flash-lite` (fast tier — this call never promotes to the deep tier) |
 | Temp | `0.2` |
 | Keys | Round-robin via `FailoverLLM` |
 
@@ -112,7 +112,7 @@ Diagnosis_merge still proceeds — `top_segments` will be built from forensic st
 
 ## Wall time
 
-25–40 s. Single Gemini structured-output call with large input (JSON-dumped `feature_store` can be 1–2 kB).
+A few seconds on the fast-tier model. Single Gemini structured-output call with large input (JSON-dumped `feature_store` can be 1–2 kB) — this used to be 25–40s under the old default model; fast-tier structured calls run in ~2s on an equivalent prompt.
 
 ## Why no RAG / no self-consistency
 

@@ -10,7 +10,7 @@ Design **AARRR-style** experiments and activation improvements: specific A/B tes
 
 ## Model
 
-Groq `llama-3.3-70b-versatile` via `get_llm("groq", temperature=0.6)`. Warmest of the strategy agents — experiment design rewards exploration.
+Groq `openai/gpt-oss-120b` via `get_llm("groq", temperature=0.6)`. Warmest of the strategy agents — experiment design rewards exploration. `reasoning_effort="low"` and structured-output `method="json_schema"` applied automatically by the factory — see [llm-factory.md](../llm-factory.md).
 
 ## Inputs (from state)
 
@@ -99,7 +99,7 @@ Try/except. On failure returns `{agent: "growth_hacker", error: str(e)}`.
 
 ## Wall time
 
-5–10 s.
+~3–5 s.
 
 ## Deep dive
 

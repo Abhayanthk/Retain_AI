@@ -26,7 +26,7 @@ Everything else uses the LangGraph default merge (last write wins per key). Para
 | Key | Type | Notes |
 |---|---|---|
 | `raw_csv_path` | `str` | File path. Resolved to absolute by `input_ingest`. |
-| `questionnaire` | `dict` | The 5-phase form payload (industry, business_model, can_ship_changes, pricing_flexibility, retention_tactics, priority_segment, churn_destination, competitors, timeline, …). Many downstream prompts read keys directly off this. |
+| `questionnaire` | `dict` | The 5-phase form payload (business_model, can_ship_changes, pricing_flexibility, retention_tactics, priority_segment, churn_destination, competitors, timeline, `analysis_depth` ("quick"/"deep"), `edge_cases`, `churn_definition`, `top_channels`, `has_completion_point`, `revenue_model`, …). Many downstream prompts read keys directly off this. |
 | `job_id` | `str` | UUID. Used by the cancellation wrapper and `push_progress`. |
 | `iteration_count` | `int` | Initialized to 0. Incremented by `strategy_critic` once per pass. |
 | `discovery_attempts` | `int` | Initialized to 0. Incremented by `diagnosis_merge` once per pass. |
@@ -73,12 +73,12 @@ Everything else uses the LangGraph default merge (last write wins per key). Para
 
 | Key | Type | Written by |
 |---|---|---|
-| `forensic_detective_output` | `dict` | `forensic_detective` — see [agents/forensic-detective.md](./agents/forensic-detective.md) for the full shape. Includes `suspected_causes`, `confidence_scores`, `citations`, `statistical_evidence`, `per_cause_evidence`, `driver_features`, `consensus_metadata` (self-consistency vote details), `hyde_answer`. |
+| `forensic_detective_output` | `dict` | `forensic_detective` — see [agents/forensic-detective.md](./agents/forensic-detective.md) for the full shape. Includes `suspected_causes`, `confidence_scores`, `citations`, `statistical_evidence` (every bucket carries `p_value`/`significant` from a two-proportion z-test), `per_cause_evidence`, `driver_features`, `consensus_metadata` (self-consistency vote details — 1 run quick mode, 3 runs deep mode), `hyde_answer`. |
 | `pattern_matcher_output` | `dict` | `pattern_matcher` — `patterns_found`, `user_segments`, `topic_clusters`, `churn_sequences`, `pattern_confidence`. |
 | `competitor_research_output` | `dict` | `competitor_research` — `matched`, `competitor`, `churn_destination`, `evidence`, `counter_positioning`. `matched: False` when destination is not in `KNOWN_COMPETITORS`. |
 | `professional_skeptic_output` | `dict` | `diagnosis_merge` (runs the skeptic inline) — `counter_arguments`, `robustness_scores`, `alternative_explanations`, `bias_flags`, `overall_quality_assessment`. |
 | `diagnosis_results` | `dict` | `diagnosis_merge` — `{forensic_findings, pattern_findings, skeptic_findings, competitor_research, merged_hypotheses, highest_confidence, total_patterns_identified}`. |
-| `top_segments` | `list[dict]` | `diagnosis_merge` — unified segment table merging forensic stat buckets, pattern_matcher `user_segments`, and tenure cohorts. Ranked by `churn_rate × size`, top 8. Consumed by every strategy agent. Each row: `{segment_id, source, label, size, retention_rate, churn_rate, descriptor, dominant_cause}`. |
+| `top_segments` | `list[dict]` | `diagnosis_merge` — unified segment table merging forensic stat buckets, pattern_matcher `user_segments`, and tenure cohorts. Ranked by `churn_rate × size` (rows failing the z-test are demoted ×0.6 before ranking), top 8. Consumed by every strategy agent. Each row: `{segment_id, source, label, size, retention_rate, churn_rate, descriptor, dominant_cause, p_value, significant}`. |
 | `discovery_attempts` | `int` | Incremented by `diagnosis_merge`. |
 
 ### Node 6 — `hypothesis_validation`

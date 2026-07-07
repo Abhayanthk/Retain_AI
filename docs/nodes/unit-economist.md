@@ -10,7 +10,7 @@ Apply an LTV/CAC lens: propose ROI-positive interventions for each verified root
 
 ## Model
 
-Groq `llama-3.3-70b-versatile` via `get_llm("groq", temperature=0.3)`. Coldest of the strategy agents — unit economics rewards precision over creativity.
+Groq `openai/gpt-oss-120b` via `get_llm("groq", temperature=0.3)`. Coldest of the strategy agents — unit economics rewards precision over creativity. `reasoning_effort="low"` and structured-output `method="json_schema"` are applied automatically by the factory for this model — see [llm-factory.md](../llm-factory.md).
 
 ## Inputs (from state)
 
@@ -21,7 +21,7 @@ Groq `llama-3.3-70b-versatile` via `get_llm("groq", temperature=0.3)`. Coldest o
 | `feature_store.ltv_estimates.mean_ltv` | Anchors ROI math. |
 | `feature_store.predictive_churn_risk.driver_features` | Top-5 hazard ratios — used to size effect. |
 | `top_segments` | Strategies MUST reference at least one. |
-| `questionnaire` | `business_model`, `goal`, `timeline`, `company_stage`, `support_model`, `can_ship_changes`, `retention_tactics`. |
+| `questionnaire` | `business_model`, `goal`, `timeline`, `company_stage`, `revenue_model`, `support_model`, `can_ship_changes`, `retention_tactics`. |
 | `human_clarification.responses` | HITL answers, JSON-dumped. |
 | `criticism` (via `build_critic_feedback_block`) | On retry: prior critic verdict + weaknesses surface in `{critic_feedback}` placeholder. |
 
@@ -129,7 +129,7 @@ Try/except. On failure returns `{agent: "unit_economist", error: str(e)}`. `stra
 
 ## Wall time
 
-5–10 s. Groq Llama 3.3 70B is fast on structured output.
+~3–5 s. Groq `openai/gpt-oss-120b` is fast on structured output (bench: ~3s for a 4k-token prompt with the full nested schema).
 
 ## Deep dive
 

@@ -18,15 +18,15 @@ POST /analyze     (FastAPI enqueues Inngest job)
       ▼
 Inngest dispatches → LangGraph pipeline (21 nodes, mostly parallel pods)
       │
-      │  pushes SSE events into asyncio.Queue keyed by job_id
+      │  appends SSE events to a broadcast history keyed by job_id
       ▼
-GET /analyze/stream/{job_id}   ← frontend EventSource subscribes
+GET /analyze/stream/{job_id}   ← frontend EventSource subscribes, replays history then follows live
       │
       ▼
 React renders each card as the matching SSE event arrives.
 ```
 
-The whole thing typically takes ~2–3 minutes wall-time on Render's free tier, dominated by the forensic agent's 3-way self-consistency vote and the strategy critic's optional retry pass.
+Wall time depends on the questionnaire's `analysis_depth` toggle: **quick** (~2–4 min) pins every Gemini call to the fast tier and runs forensic diagnosis single-pass; **deep** (~10–20 min) promotes reasoning-heavy nodes to a stronger model and triples the forensic self-consistency vote.
 
 ---
 
@@ -43,7 +43,7 @@ The whole thing typically takes ~2–3 minutes wall-time on Render's free tier, 
 | Agents | `backend/app/graph/agents/{discovery,execution}/*.py` | LLM-driven reasoning units called by node wrappers. |
 | LLM factory | `backend/app/config.py` | Round-robin key pool + failover for Gemini and Groq. |
 | RAG | `backend/app/rag/{corpus_data,ingest,store,hyde}.py` | Chroma-backed retrieval with HyDE + signal-boosted scoring. |
-| SSE infra | `backend/app/shared.py` + `backend/app/graph/stream_utils.py` | `active_streams` dict; `push_progress()` for mid-node updates. |
+| SSE infra | `backend/app/shared.py` + `backend/app/graph/stream_utils.py` | `active_streams` dict (append-only event history + subscriber wake signals); `push_event()` / `push_progress()` broadcast events to every open connection. |
 
 ---
 
@@ -58,12 +58,12 @@ User fills the 5-phase questionnaire in `frontend/app/form/page.tsx` and selects
 @app.post("/analyze")
 async def run_analysis(req_body):
     job_id = str(uuid.uuid4())
-    active_streams[job_id] = {"queue": asyncio.Queue(), "hitl_event": asyncio.Event(), ...}
+    active_streams[job_id] = {"events": [], "subscribers": [], "hitl_event": asyncio.Event(), ...}
     await inngest_client.send(inngest.Event(name="app/analyze", data=req_body))
     return {"status": "queued", "job_id": job_id}
 ```
 
-The browser receives `{job_id}`, navigates to `/results/{job_id}`, and opens an SSE connection to `GET /analyze/stream/{job_id}`. That connection drains `active_streams[job_id]["queue"]` until a `complete` / `cancelled` / `error` event.
+The browser receives `{job_id}`, navigates to `/results/{job_id}`, and opens an SSE connection to `GET /analyze/stream/{job_id}`. That connection replays `active_streams[job_id]["events"]` from its own cursor (0 on first connect), then follows new events live, until a `complete` / `cancelled` / `error` event. Because every event is appended to a shared history rather than consumed from a single queue, a page refresh — or two tabs on the same job — never drops an event.
 
 ### 2. Inngest fires the LangGraph runner
 
@@ -72,11 +72,11 @@ The browser receives `{job_id}`, navigates to `/results/{job_id}`, and opens an 
 ```python
 async for state in graph.astream(initial_state, config={"configurable": {"job_id": job_id}}, stream_mode="values"):
     node = state.get("current_node")
-    if node == "feature_engineering": await queue.put({"type": "risk_ready", ...})
-    elif node == "behavioral_map":    await queue.put({"type": "churn_profile_ready", ...})
-    elif node == "diagnosis_merge":   await queue.put({"type": "diagnosis_ready", ...})
-    elif node == "simulation":        await queue.put({"type": "simulation_ready", ...})
-    elif node == "execution_architect": await queue.put({"type": "solution_ready", ...})
+    if node == "feature_engineering": push_event(job_id, {"type": "risk_ready", ...})
+    elif node == "behavioral_map":    push_event(job_id, {"type": "churn_profile_ready", ...})
+    elif node == "diagnosis_merge":   push_event(job_id, {"type": "diagnosis_ready", ...})
+    elif node == "simulation":        push_event(job_id, {"type": "simulation_ready", ...})
+    elif node == "execution_architect": push_event(job_id, {"type": "solution_ready", ...})
 ```
 
 Five stages emit user-visible SSE events. Every node still runs — the SSE step just decides which transitions are worth showing.
@@ -98,7 +98,7 @@ flowchart TD
     FE --> BM
 
     subgraph Disc [Discovery Pod — parallel]
-      FD[forensic_detective<br/>3× self-consistency]
+      FD[forensic_detective<br/>z-test gated + self-consistency]
       PM[pattern_matcher]
       CR[competitor_research]
     end
@@ -150,7 +150,7 @@ Wiring lives in `backend/app/graph/builder.py`. Every node is wrapped with `_wra
 | Behavior | `behavioral_map` | Kaplan-Meier survival curve, milestone retention, tenure cohorts. | [nodes/behavioral-map.md](./nodes/behavioral-map.md) |
 | Discovery | `forensic_detective`, `pattern_matcher`, `competitor_research` (parallel) → `diagnosis_merge` | Diagnose root causes (forensic), find segments/sequences (pattern), pull competitor counter-positioning (when applicable), then run the professional skeptic + build the top-segments table. | [nodes/forensic-detective.md](./nodes/forensic-detective.md), [nodes/pattern-matcher.md](./nodes/pattern-matcher.md), [nodes/competitor-research.md](./nodes/competitor-research.md), [nodes/diagnosis-merge.md](./nodes/diagnosis-merge.md) |
 | Validation | `hypothesis_validation` → `constraint_add` → `adaptive_hitl` | Gate on confidence × robustness, filter by budget/legal, then ask the human 2–3 clarifying questions over SSE. | [nodes/hypothesis-validation.md](./nodes/hypothesis-validation.md), [nodes/constraint-add.md](./nodes/constraint-add.md), [nodes/adaptive-hitl.md](./nodes/adaptive-hitl.md) |
-| Strategy | `unit_economist`, `jtbd_specialist`, `growth_hacker` (parallel) → `strategy_merge` | Three Groq Llama agents propose interventions/tactics under different frameworks. Merge keeps the strict top + lighter alternatives. | [nodes/unit-economist.md](./nodes/unit-economist.md), [nodes/jtbd-specialist.md](./nodes/jtbd-specialist.md), [nodes/growth-hacker.md](./nodes/growth-hacker.md), [nodes/strategy-merge.md](./nodes/strategy-merge.md) |
+| Strategy | `unit_economist`, `jtbd_specialist`, `growth_hacker` (parallel) → `strategy_merge` | Three Groq agents (`openai/gpt-oss-120b`) propose interventions/tactics under different frameworks. Merge keeps the strict top + lighter alternatives. | [nodes/unit-economist.md](./nodes/unit-economist.md), [nodes/jtbd-specialist.md](./nodes/jtbd-specialist.md), [nodes/growth-hacker.md](./nodes/growth-hacker.md), [nodes/strategy-merge.md](./nodes/strategy-merge.md) |
 | Review | `strategy_skeptic` → `simulation` → `strategy_critic` | Adversarial pre-sim review; RAG-anchored Monte Carlo (10k iters); senior-partner critic that gates approval. | [nodes/strategy-skeptic.md](./nodes/strategy-skeptic.md), [nodes/simulation.md](./nodes/simulation.md), [nodes/strategy-critic.md](./nodes/strategy-critic.md) |
 | Finalize | `evidence_dossier` → `execution_architect` | Build per-problem rationale chains; pass-1 reasoning trace + pass-2 structured Pydantic playbook. | [nodes/evidence-dossier.md](./nodes/evidence-dossier.md), [nodes/execution-architect.md](./nodes/execution-architect.md) |
 
@@ -190,14 +190,14 @@ Only five transitions write to the queue (`backend/app/main.py`):
 |---|---|---|
 | `risk_ready` | `feature_engineering` | High-risk count, CoxPH concordance, RFM, engagement cohorts, data quality summary, input context. |
 | `churn_profile_ready` | `behavioral_map` | KM survival curve (downsampled to ≤20 points), median survival, milestone retention, tenure cohorts. |
-| `forensic_progress` (mid-node) | `forensic_detective` self-consistency runs | Per-run `started` / `completed` / `failed` at temps 0.2/0.5/0.7. |
+| `forensic_progress` (mid-node) | `forensic_detective` self-consistency runs | Per-run `started` / `completed` / `failed`. 1 run at temp 0.3 in quick mode, 3 runs at temps 0.2/0.5/0.7 in deep mode. |
 | `hitl_questions_ready` (mid-node) | `adaptive_hitl` | 2–3 questions; UI shows a modal and posts answers to `/analyze/{job_id}/respond`. |
 | `diagnosis_ready` | `diagnosis_merge` | `merged_hypotheses`, `forensic_findings`, `pattern_findings`, `skeptic_findings`, `competitor_research`, `top_segments`, `driver_features`. |
 | `critic_retry_started` (mid-node) | `strategy_critic` (only when retrying) | `iteration`, `max`, verdict reason, skeptic flag count. |
 | `simulation_ready` | `simulation` | `expected_lift`, `confidence_interval_5_95`, `interventions[]` (each with `lift_prior_anchor`/`pct`/`citations`), `rag_anchored_count`, `strategy_skeptic`. |
 | `solution_ready` | `execution_architect` | `final_playbook` (with `reasoning_trace` and per-problem `rationale_chain`) + `evidence_dossier`. |
 | `cancelled` / `error` | terminal failure paths | `error_type`, `error_message`, `last_node`. |
-| `complete` | end of stream | `{}`; SSE handler then closes and pops `active_streams[job_id]`. |
+| `complete` | end of stream | `{}`; SSE handler closes. `active_streams[job_id]` is popped 120s later (`_schedule_cleanup`), giving a same-moment refresh time to replay. |
 
 Heartbeat: if the queue is silent for 15s the handler yields `: heartbeat\n\n` to keep proxies from killing the connection.
 
@@ -220,8 +220,8 @@ On critic-retry the HITL node short-circuits: it reuses the prior answers from s
 - **DuckDB** — reads any CSV without writing schema. Used in `input_ingest`, `data_audit`, `feature_engineering`, `behavioral_map`.
 - **lifelines** — Kaplan-Meier + CoxPH. `feature_engineering` fits the CoxPH model and extracts top-5 hazard drivers; `behavioral_map` fits KM for the survival curve.
 - **Chroma** — vector DB for the retention-framework corpus. Default embedder `all-MiniLM-L6-v2`. Persistent on disk at `backend/app/rag/chroma_db/`.
-- **Gemini 3 Flash Preview** — discovery + architect. `forensic_detective`, `pattern_matcher`, `professional_skeptic`, `strategy_skeptic`, `adaptive_hitl`, `strategy_critic`, `execution_architect`, HyDE. Round-robins across `GOOGLE_API_KEY[_1..32]`.
-- **Groq Llama 3.3 70B** — strategy agents. `unit_economist`, `jtbd_specialist`, `growth_hacker`. Round-robins across `GROQ_API_KEY[_1..32]`.
+- **Gemini** — discovery + architect. `forensic_detective`, `pattern_matcher`, `professional_skeptic`, `strategy_skeptic`, `adaptive_hitl`, `strategy_critic`, `execution_architect`, HyDE. Fast tier (`gemini-3.1-flash-lite`) by default; reasoning-heavy nodes promote to the deep tier (`gemini-3.5-flash`) when `questionnaire.analysis_depth == "deep"`. Round-robins across `GOOGLE_API_KEY[_1..32]`. See [llm-factory.md](./llm-factory.md).
+- **Groq** — strategy agents. `unit_economist`, `jtbd_specialist`, `growth_hacker` on `openai/gpt-oss-120b`. Round-robins across `GROQ_API_KEY[_1..32]`.
 - **Inngest** — durable background job runner. Decouples the slow LangGraph stream from the API request that started it.
 - **Render** — production host. Free tier is constrained on RSS, which is why the retry loops are disabled and why `app/main.py` symlinks `~/.cache/chroma` to the project dir so the ONNX cache survives cold starts.
 

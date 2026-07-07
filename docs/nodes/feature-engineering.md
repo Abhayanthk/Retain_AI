@@ -23,9 +23,33 @@ Compute retention-relevant features: RFM z-scores, LTV aggregates, engagement ve
 
 ## CoxPH survival model
 
+Feature selection now excludes identifier-like columns and one-hot encodes low-cardinality categoricals, rather than throwing every numeric column at CoxPH raw:
+
 ```python
-features = [c for c in numeric_cols if c not in [churn_col, tenure_col]]
-df_ml    = df[features + [churn_col, tenure_col]].dropna()
+# Drop the detected customer_id plus any numeric column that's near-unique
+# (>90% distinct) — those are identifiers, not behavior, and used to show up
+# as the #1 "hazard driver" purely from row-index noise.
+id_col = detected.get("customer_id")
+features = [
+    c for c in numeric_cols
+    if c not in (churn_col, tenure_col, id_col)
+    and not (len(df) > 20 and df[c].nunique() / max(1, df[c].count()) > 0.9)
+]
+
+# One-hot encode low-cardinality categoricals (plan tier, contract length, ...)
+# so CoxPH can surface hazard ratios like "Contract Length=Monthly" instead of
+# ignoring the column entirely.
+cat_cols = [
+    c for c in df.select_dtypes(include=["object", "category"]).columns
+    if c not in (churn_col, tenure_col, id_col) and 2 <= df[c].nunique() <= 6
+]
+df_model = pd.get_dummies(df[features + cat_cols + [churn_col, tenure_col]],
+                           columns=cat_cols, drop_first=True, dtype=float, prefix_sep="=")
+features = [c for c in df_model.columns if c not in (churn_col, tenure_col)]
+
+df_ml = df_model.dropna()
+# Drop any feature that became constant after dropna — zero variance breaks CoxPH.
+df_ml = df_ml.drop(columns=[c for c in features if df_ml[c].nunique() <= 1])
 
 cph = CoxPHFitter(penalizer=0.1)             # small L2 for convergence stability
 cph.fit(df_ml, duration_col=tenure_col, event_col=churn_col)
@@ -114,6 +138,10 @@ After this node, `app/main.py` emits `risk_ready`:
 ```
 
 The `insight` string is selected by threshold from `risk_pct` and `high_risk_count` — see lines ~120-140 of `app/main.py`.
+
+## Why exclude IDs and one-hot encode categoricals
+
+Before this, `CustomerID`-shaped columns regularly won "top hazard driver" purely because they're a unique-per-row number CoxPH could fit *something* to — a data artifact, not a signal. And plan-tier / contract-length columns (strings) were silently dropped since CoxPH only takes numeric features, so the model never saw the single strongest churn split in most subscription datasets (e.g. `Contract Length=Monthly`). Both are fixed by the exclusion + one-hot-encoding step above; verified on the demo dataset, where `Contract Length=Monthly` now surfaces as the #1 driver (HR≈1.78, p<0.001) instead of `CustomerID` noise.
 
 ## Why CoxPH (not logistic regression)
 

@@ -11,9 +11,10 @@ For node-level context: [`docs/nodes/unit-economist.md`](../nodes/unit-economist
 | | |
 |---|---|
 | Provider | Groq |
-| Model ID | `llama-3.3-70b-versatile` |
+| Model ID | `openai/gpt-oss-120b` |
 | Temp | `0.3` (coldest strategy agent — unit economics rewards precision) |
 | Keys | Round-robin via `FailoverLLM` across all `GROQ_API_KEY[_N]` |
+| Quirks | Factory auto-applies `reasoning_effort="low"` + structured-output `method="json_schema"` for this model — see [llm-factory.md](../llm-factory.md#groq-openaigpt-oss-120b-quirks). |
 
 ## Tiered Pydantic schema (F6)
 
@@ -78,7 +79,7 @@ def run_unit_economist(state: RetentionGraphState) -> dict[str, Any]:
 | `feature_store.ltv_estimates.mean_ltv` | Anchors ROI math; defaults to `1000` if absent. |
 | `feature_store.predictive_churn_risk.driver_features` | Sizing effects with HR. |
 | `top_segments` | Strategies MUST reference at least one (the highest churn×size). |
-| `questionnaire` | `business_model`, `goal`, `timeline`, `company_stage`, `support_model`, `can_ship_changes`, `retention_tactics`. |
+| `questionnaire` | `business_model`, `goal`, `timeline`, `company_stage`, `revenue_model`, `support_model`, `can_ship_changes`, `retention_tactics`. |
 | `human_clarification.responses` | HITL answers. |
 | `criticism` (via `build_critic_feedback_block`) | Retry-pass feedback (dormant on free tier). |
 
@@ -112,8 +113,8 @@ except Exception as e:
 
 ## Wall time
 
-5–10 s. Groq Llama 3.3 70B is fast on structured output. Bottleneck is input prompt size — `verified_root_causes` + `constrained_brief` + `top_segments` together can run 2–3 kB.
+~3–5 s. Groq `openai/gpt-oss-120b` is fast on structured output. Bottleneck is input prompt size — `verified_root_causes` + `constrained_brief` + `top_segments` together can run 2–3 kB.
 
 ## Why Groq (not Gemini)
 
-The three strategy agents historically ran on Groq because their structured output is more deterministic on Llama than on Gemini. The architect was moved to Gemini for the F12 two-pass reasoning trace, but the strategy agents kept Groq for speed.
+The three strategy agents run on Groq for speed — a 2026-07-07 latency bench found Groq's structured-output calls consistently under 5s versus Gemini's much higher variance on equivalent prompts. `openai/gpt-oss-120b` also beat `llama-3.3-70b-versatile` (the prior default) on answer depth in that same bench — it correctly cited hazard ratios and significance flags where Llama produced vaguer causes. The architect stays on Gemini for the F12 two-pass reasoning trace, which needs stronger freeform prose quality than a structured-output-focused model provides.

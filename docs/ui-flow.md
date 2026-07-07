@@ -7,9 +7,10 @@ End-to-end trace from the user clicking **Submit** on the form to the playbook r
 | Role | File |
 |---|---|
 | Landing | [`frontend/app/page.tsx`](../frontend/app/page.tsx) |
-| Form (5 phases) | [`frontend/app/form/page.tsx`](../frontend/app/form/page.tsx) |
-| Results + SSE | [`frontend/app/results/[job_id]/page.tsx`](../frontend/app/results/[job_id]/page.tsx) |
-| Dashboard CSS | [`frontend/app/dashboard.css`](../frontend/app/dashboard.css) |
+| Form (5 phases + depth toggle) | [`frontend/app/form/page.tsx`](../frontend/app/form/page.tsx) |
+| Results orchestrator | [`frontend/app/results/[job_id]/page.tsx`](../frontend/app/results/[job_id]/page.tsx) |
+| SSE hook + snapshot persistence | [`frontend/app/results/[job_id]/useAnalysisStream.ts`](../frontend/app/results/[job_id]/useAnalysisStream.ts) |
+| Results sections | [`frontend/app/results/[job_id]/components/`](../frontend/app/results/[job_id]/components/) — one file per section, Tailwind utilities only (no hand-written CSS) |
 | API entry | [`backend/app/main.py`](../backend/app/main.py) |
 | SSE infra | [`backend/app/shared.py`](../backend/app/shared.py), [`backend/app/graph/stream_utils.py`](../backend/app/graph/stream_utils.py) |
 
@@ -19,7 +20,7 @@ End-to-end trace from the user clicking **Submit** on the form to the playbook r
 |---|---|---|---|
 | `POST` | `/upload` | Store uploaded CSV in `/tmp/retain_ai_uploads/<uuid>.csv`. | FormData `file`. Returns `{status, file_path, original_name}`. |
 | `POST` | `/analyze` | Queue a new analysis. Creates `active_streams[job_id]` and sends an Inngest event. | `{raw_csv_path, questionnaire}`. Returns `{status: "queued", job_id, message}`. |
-| `GET`  | `/analyze/stream/{job_id}` | Server-Sent Events stream. Drains `active_streams[job_id]["queue"]` until a `complete` event. | `text/event-stream`. |
+| `GET`  | `/analyze/stream/{job_id}` | Server-Sent Events stream. Replays `active_streams[job_id]["events"]` from its own cursor, then follows live, until a `complete` event. Multiple connections on the same job each get the full history — nothing is consumed. | `text/event-stream`. |
 | `POST` | `/analyze/{job_id}/cancel` | Mark the job cancelled. Next node entry raises `JobCancelled`. Also `set()`s the HITL event so a paused graph unblocks. | `{}`. Returns `{status, job_id, cancelled}`. |
 | `POST` | `/analyze/{job_id}/respond` | Submit HITL answers. Sets `stream["hitl_event"]` so `adaptive_hitl` resumes. | `{answers: {...}}`. Returns `{status: "ok"}`. |
 | `GET`  | `/` | Health string. |  |
@@ -51,12 +52,20 @@ POST /analyze
     "churn_destination": "Microsoft Teams",
     "time_range": "last_12_months",
     "legal_constraints": ["GDPR"],
-    "budget": "medium"
+    "budget": "medium",
+    "analysis_depth": "quick",
+    "edge_cases": ["Monthly contracts are labeled churn=1 at contract end"],
+    "churn_definition": "Inactivity (30 days)",
+    "top_channels": ["Paid ads", "Organic search / SEO"],
+    "has_completion_point": "No",
+    "revenue_model": "Monthly subscription"
   }
 }
 ```
 
 Many of these keys are read directly by the strategy / critic / architect prompts — the field names matter. Adding a new questionnaire field requires updating both the form (`form/page.tsx`) and any prompt that should consume it.
+
+`industry`, `size`, `time_range`, and `budget` are sent but the form never actually collects them — they arrive as empty strings/defaults. Don't assume a key exists in the payload just because it's read somewhere in the backend; grep the actual form fields in `form/page.tsx` first (`constraint_add`'s old budget/legal filter was deleted after this exact mistake — the code paths could never fire). `analysis_depth`, `edge_cases`, `churn_definition`, `top_channels`, `has_completion_point`, and `revenue_model` are real, form-collected fields that reach prompts — see the relevant node docs for where each lands.
 
 `raw_csv_path` is a bare basename — `input_ingest` resolves it against `/tmp/retain_ai_uploads/` first and `backend/data/` as fallback for local static files.
 
@@ -65,8 +74,9 @@ Many of these keys are read directly by the strategy / critic / architect prompt
 | Key | Contents |
 |---|---|
 | `latest_form_state` | Current form inputs — pre-fills `/form` on return. |
-| `latest_form_payload` | JSON actually sent to `/analyze`. Used to re-display the request that started a job. |
-| `job_{jobId}` | Accumulated SSE events + final playbook for one job. Lets the results page survive a refresh without losing state. |
+| `latest_form_payload` | JSON actually sent to `/analyze`. Used to re-display the request that started a job, and reused by the results page's **Rerun** button. |
+| `latest_csv_text` / `latest_csv_name` | Raw CSV text (<4MB) stashed on form submit. **Rerun** re-uploads it to get a fresh server-side file — the original upload's temp file doesn't survive a server restart / Render spin-down, and the results page has no `File` object of its own. |
+| `job_{jobId}` | Accumulated SSE `stagesData`, `hitlSubmitted`, `connectionStatus`, `errorInfo`, and per-stage event timestamps (`stageEventTs`, `jobStartTs`). Lets the results page survive a refresh without losing state or resetting stage-duration timers. |
 
 The results page checks `job_{jobId}` on mount and only opens a fresh `EventSource` if no terminal `complete` event has been recorded yet.
 
@@ -77,7 +87,7 @@ sequenceDiagram
     participant U as User
     participant F as Next.js UI
     participant A as FastAPI
-    participant Q as asyncio.Queue<br/>(active_streams)
+    participant Q as broadcast event log<br/>(active_streams)
     participant I as Inngest
     participant G as LangGraph
 
@@ -85,12 +95,12 @@ sequenceDiagram
     F->>A: POST /upload (FormData)
     A-->>F: { file_path }
     F->>A: POST /analyze { raw_csv_path, questionnaire }
-    A->>A: job_id = uuid4()<br/>active_streams[job_id] = {queue, hitl_event, hitl_answers, cancelled}
+    A->>A: job_id = uuid4()<br/>active_streams[job_id] = {events: [], subscribers: [], hitl_event, hitl_answers, cancelled}
     A->>I: inngest.send(event="app/analyze")
     A-->>F: { job_id, status: "queued" }
     F->>F: router.push(/results/{job_id})
     F->>A: GET /analyze/stream/{job_id}
-    A->>F: open SSE, await queue
+    A->>F: open SSE, replay history + subscribe to live events
 
     I->>G: analyze_retention_job(ctx, step)
     G->>G: astream(initial_state, stream_mode="values")
@@ -144,7 +154,7 @@ Every event is JSON:
 { "type": "<event_type>", "message": "...", "data": { ... }, "ts_ms": 1234567890 }
 ```
 
-(`ts_ms` is added by `push_progress`; the stage-transition events written in `main.py` do not include it.)
+(`ts_ms` is added by `push_event()` for every event — including the stage-transition events written in `main.py`, which now also go through `push_event()` rather than a raw queue put. The frontend derives stage durations from this timestamp rather than client arrival time, so durations stay correct across page refreshes — a burst-replay after a refresh would otherwise collapse every duration to ~0s.)
 
 ### Stage transitions (one per pipeline stage)
 
@@ -181,8 +191,9 @@ If the queue is idle for 15s the SSE handler yields `: heartbeat\n\n` (an SSE co
 The results page (`results/[job_id]/page.tsx`):
 
 - Holds one `useRef<EventSource | null>` to dedupe under React Strict Mode.
-- On mount: reads `job_{jobId}` from `sessionStorage` — if a terminal `complete` event was recorded, replays from cache instead of opening a fresh `EventSource`.
-- Otherwise opens `GET /analyze/stream/{job_id}` and accumulates events.
+- On mount: reads `job_{jobId}` from `sessionStorage` — if a terminal `complete`/`error`/`cancelled` status was recorded, renders from cache instead of opening a fresh `EventSource` (the backend would 404 on an already-cleaned-up job).
+- Otherwise opens `GET /analyze/stream/{job_id}`, which replays the full event history before following live — a refresh mid-run picks up every event again, not just new ones.
+- Per-stage timers are derived from each event's `ts_ms` (`useAnalysisStream.ts`), not from when the browser received it.
 
 | Event type | Renders |
 |---|---|
@@ -220,7 +231,7 @@ Both helpers live at the top of `frontend/app/results/[job_id]/page.tsx`.
 
 - **Node exception:** the node catches and returns `{"errors": [...]}` (using the `operator.add` reducer). The graph continues; the SSE for that stage simply isn't emitted because `current_node` advances.
 - **Inngest step crash:** the `execute_and_stream` `except` block pushes an `error` SSE then `complete` so the frontend exits cleanly.
-- **SSE disconnect mid-pipeline:** the handler breaks the loop but does **not** pop `active_streams[job_id]` — the queue keeps filling. The frontend can reconnect by re-issuing `GET /analyze/stream/{job_id}` and pick up where it left off (until `complete`, which pops).
+- **SSE disconnect mid-pipeline:** the generator loop exits but `active_streams[job_id]` is untouched — the event history keeps growing. The frontend reconnects by re-issuing `GET /analyze/stream/{job_id}`, which replays the entire history from cursor 0 (not just what's new), so nothing is lost regardless of how long the gap was. Cleanup only happens 120s after `complete`.
 - **HITL timeout:** 5 minutes. The graph proceeds with empty `responses` and `clarification_status: "timeout"`. Downstream strategy agents read `human_clarification.responses` as `{}`.
 - **Cancellation race during HITL:** the cancel endpoint sets `hitl_event.set()` so the awaiting `asyncio.wait_for` unblocks immediately; the next `_wrap_node` entry then raises `JobCancelled`.
 - **Inngest SDK arg-shape drift:** the job handler uses `*args, **kwargs` and tries `kwargs.get("ctx")` then `args[0]` to survive 0.5.x→ shape changes.

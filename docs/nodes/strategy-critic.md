@@ -18,7 +18,7 @@ Senior-partner review. Combines LLM judgment with hard thresholds + skeptic gate
 
 ## Model
 
-Gemini 3 Flash Preview via `get_llm("gemini", temperature=0.1)`. Cold temp — critique should be consistent.
+Gemini via `get_llm("gemini", temperature=0.1, model=gemini_model(depth, deep_call=True))` — fast tier (`gemini-3.1-flash-lite`) by default, promotes to the deep tier (`gemini-3.5-flash`) when `questionnaire.analysis_depth == "deep"`. Cold temp — critique should be consistent.
 
 ## Output schema
 

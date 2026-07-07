@@ -17,7 +17,7 @@ Fan-out point for the Strategy Pod — after this node, three execution agents r
 
 ## Model
 
-Gemini 3 Flash Preview via `get_llm("gemini", temperature=0.3)`. Pydantic schema:
+Fast-tier Gemini (`gemini-3.1-flash-lite`) via `get_llm("gemini", temperature=0.3)` — this call never promotes to the deep tier regardless of `analysis_depth`, it's shallow question generation. Pydantic schema:
 
 ```python
 class HitlQuestions(BaseModel):
@@ -44,8 +44,8 @@ The "grounded in a finding" rule keeps the questions from being generic LLM fill
 ```python
 stream = active_streams[job_id]
 
-# Push the questions
-await stream["queue"].put({
+# Push the questions — broadcast to every open SSE connection, appended to history
+push_event(job_id, {
     "type": "hitl_questions_ready",
     "message": "Clarification needed before generating strategies.",
     "data": {"questions": hitl_questions},

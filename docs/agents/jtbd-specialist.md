@@ -11,9 +11,10 @@ For node-level context: [`docs/nodes/jtbd-specialist.md`](../nodes/jtbd-speciali
 | | |
 |---|---|
 | Provider | Groq |
-| Model ID | `llama-3.3-70b-versatile` |
+| Model ID | `openai/gpt-oss-120b` |
 | Temp | `0.5` (warmer than unit_economist — JTBD benefits from qualitative framing) |
 | Keys | Round-robin via `FailoverLLM` |
+| Quirks | Factory auto-applies `reasoning_effort="low"` + `method="json_schema"` for this model. |
 
 ## Pydantic schema
 
@@ -72,7 +73,7 @@ def run_jtbd_specialist(state: RetentionGraphState) -> dict[str, Any]:
 | `verified_root_causes` | Each cause maps to one or more underserved jobs. |
 | `constrained_brief` | Feasibility floor. |
 | `top_segments` | Localize identified jobs. |
-| `questionnaire` | `business_model`, `priority_segment`, `typical_customer`, `industry`, `company_stage`, `can_ship_changes`. |
+| `questionnaire` | `business_model`, `priority_segment`, `typical_customer`, `industry`, `company_stage`, `can_ship_changes`, `has_completion_point`. |
 | `human_clarification.responses` | HITL answers. |
 
 ## Prompt
@@ -86,6 +87,7 @@ Business context:
 - Industry: {industry}
 - Stage: {stage}
 - Can ship product changes: {can_ship}
+- Product has a natural completion point (job can be "done"): {has_completion_point}
 - Human clarifications: {hitl_answers}
 
 Instructions:
@@ -94,6 +96,9 @@ Instructions:
   onboarding jobs highest.
 - If priority_segment is "High-value / enterprise", focus on social and strategic jobs.
 - For each top segment listed, name at least one job that segment is failing to get done.
+- If the product has a completion point ("Yes"), churn after completion may be healthy —
+  separate "job done" churn from failure churn. If "No", frame jobs as ongoing and target
+  habit loops.
 
 For each cause, identify the functional, emotional, and social jobs. Then propose
 interventions addressing the highest-gap jobs.
@@ -144,7 +149,7 @@ except Exception as e:
 
 ## Wall time
 
-5–10 s.
+~3–5 s.
 
 ## Why warmer than unit_economist
 

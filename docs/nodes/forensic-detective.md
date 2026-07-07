@@ -6,14 +6,14 @@ Heaviest node in the graph. Runs in parallel with [`pattern_matcher`](./pattern-
 
 ## What it does end-to-end
 
-1. **Compute statistical evidence** — 7 stat buckets covering channel, integration, plan tier, support volume, usage decile, tenure bucket, time-to-churn.
+1. **Compute statistical evidence** — 8 stat buckets covering channel, integration, plan tier, contract cadence, support volume, usage decile, tenure bucket, time-to-churn. Every bucket carries a two-proportion z-test (`p_value`, `significant`) against the rest of the population.
 2. **Derive signal tags** from those stats (`30_day_cliff`, `low_integration`, `plan_tier_churn`, …).
 3. **HyDE pass 1 — broad retrieval** — write a 3-sentence hypothetical answer for the priority segment, embed it, query Chroma with `k=6` + signal tags.
-4. **Self-consistency vote** — fire the candidate-cause prompt **3× in parallel** at temps 0.2 / 0.5 / 0.7 (each gets a different Gemini key via the round-robin factory). Keep causes that appear in ≥2 runs.
+4. **Self-consistency vote** — fire the candidate-cause prompt in parallel: **1 run** at temp 0.3 in quick mode, **3 runs** at temps 0.2 / 0.5 / 0.7 in deep mode (each gets a different Gemini key via the round-robin factory). In deep mode, keep only causes appearing in ≥2 of 3 runs; in quick mode the single run's causes pass through unvoted.
 5. **Per-cause RAG pass** — for each top-3 voted cause, retrieve `k=3` more chunks using the cause text itself as the query.
 6. **Merge citations** — union of LLM-self-cited ids + per-cause retrieval ids.
 
-The whole thing typically takes 40–60 s wall time on Render's free tier with 8 Gemini keys configured.
+Wall time is depth-dependent: ~5–15 s in quick mode (fast-tier model, single run), ~40–60 s in deep mode (deep-tier model, 3 parallel self-consistency runs) on Render's free tier with 8 Gemini keys configured.
 
 ## Inputs (from state)
 
@@ -23,7 +23,7 @@ The whole thing typically takes 40–60 s wall time on Render's free tier with 8
 | `input_context.detected_columns` | Resolve churn/tenure/plan/usage/support/integration columns. |
 | `behavior_curves` | `median_survival_time`, `milestone_retention.month_1` → signal tags. |
 | `feature_store.predictive_churn_risk.driver_features` | CoxPH top-5 — surfaced into the prompt as quantitative anchors. |
-| `questionnaire` | `priority_segment`, `business_model`, `business_context`, `competitors`, `churn_destination`, `goal`. |
+| `questionnaire` | `priority_segment`, `business_model`, `business_context`, `competitors`, `churn_destination`, `goal`, `analysis_depth` (selects model + self-consistency run count), `edge_cases` (analyst caveats — prompt is told these may invalidate naive readings of the stats), `churn_definition`, `top_channels`. |
 
 ## Signal derivation
 
@@ -35,6 +35,7 @@ The whole thing typically takes 40–60 s wall time on Render's free tier with 8
 | Channel-spread > 0.15 | `channel_churn`, `channel_variance`, `bad_fit` |
 | Any integration data | `low_integration`, `integration_failure`, `b2b_churn` |
 | Plan-tier spread > 0.15 | `plan_tier_churn` |
+| Contract-cadence spread > 0.15 | `contract_cadence_churn`, `commitment_gap`, `price_sensitivity` |
 | Support-volume disparity | `high_support_volume` |
 | Usage-decile spread | `engagement_decay`, `shallow_engagement` |
 | `median_survival_time ≤ 3` | `short_tenure_churn`, `30_day_cliff`, `onboarding_friction` |
@@ -46,7 +47,8 @@ RAG's `+0.05` per matching tag boost then biases retrieval toward chunks that ta
 ## Self-consistency loop (F3) — parallelized
 
 ```python
-SELF_CONSISTENCY_TEMPS = [0.2, 0.5, 0.7]
+SELF_CONSISTENCY_TEMPS = [0.2, 0.5, 0.7]        # deep mode
+# quick mode uses sc_temps = [0.3] and vote_threshold = 1 instead
 
 def _run_one(idx_temp):
     idx, t = idx_temp
@@ -60,7 +62,7 @@ with ThreadPoolExecutor(max_workers=3) as pool:
     results = list(pool.map(_run_one, enumerate(SELF_CONSISTENCY_TEMPS, start=1)))
 ```
 
-Three concurrent Gemini calls → three different round-robin keys in flight → wall time = max(individual call) instead of sum. Each call streams a `forensic_progress` SSE event so the UI can show per-run progress.
+In deep mode, three concurrent Gemini calls → three different round-robin keys in flight → wall time = max(individual call) instead of sum. Quick mode skips the thread-pool fan-out entirely (1 run). Each call streams a `forensic_progress` SSE event so the UI can show per-run progress.
 
 ### Voting
 
@@ -68,7 +70,7 @@ Three concurrent Gemini calls → three different round-robin keys in flight →
 
 1. Normalize each cause text (lowercase + strip punctuation + collapse whitespace).
 2. Group runs by normalized cause.
-3. **Winners** = causes appearing in ≥ `SELF_CONSISTENCY_VOTE_THRESHOLD` (2) runs.
+3. **Winners** = causes appearing in ≥ vote_threshold runs (2 of 3 in deep mode; 1 of 1 in quick mode, i.e. every candidate survives).
 4. **Canonical phrasing** = phrasing from the highest-confidence run that produced it.
 5. **Confidence** = mean across runs that produced it.
 6. **Citations** = union across runs.
@@ -93,11 +95,12 @@ Result populates `forensic_detective_output.per_cause_evidence`. Each cause now 
     "suspected_causes": [str, ...],                    # top 3 after vote
     "confidence_scores": {cause: float},
     "citations": {cause: [chunk_id, ...]},             # union of LLM + per-cause
-    "statistical_evidence": {                           # 7 buckets
+    "statistical_evidence": {                           # 8 buckets
         "churn_rate": float,
-        "churn_by_channel": {label: {churn_rate, size}},
+        "churn_by_channel": {label: {churn_rate, size, churned, p_value, significant}},
         "churn_by_integration": {...},
         "churn_by_plan_tier": {...},
+        "churn_by_contract": {...},                     # contract cadence — monthly/quarterly/annual
         "churn_by_support_volume": {none/low/high: {...}},
         "churn_by_usage_decile": {q1/q2/q3/q4: {...}},
         "churn_rate_by_tenure_bucket": {"0-1mo": {...}, ..., "24+mo": {...}},
@@ -108,9 +111,9 @@ Result populates `forensic_detective_output.per_cause_evidence`. Each cause now 
     "driver_features": [...],                          # forwarded from feature_store
     "hyde_answer": str,                                # the 3-sentence hypothetical for observability
     "consensus_metadata": {
-        "runs_total": 3,
-        "runs_temps": [0.2, 0.5, 0.7],
-        "vote_threshold": 2,
+        "runs_total": 1,                                # 3 in deep mode
+        "runs_temps": [0.3],                             # [0.2, 0.5, 0.7] in deep mode
+        "vote_threshold": 1,                             # 2 in deep mode
         "fallback_used": bool,
         "votes": [{cause, votes, mean_confidence, phrasings: [...]}, ...],
         "partial_failures": [str, ...]                  # only present if some runs failed
@@ -121,7 +124,7 @@ Result populates `forensic_detective_output.per_cause_evidence`. Each cause now 
 
 ## Mid-node SSE events
 
-`push_progress(job_id, "forensic_progress", ...)` fires 6 events per pipeline run (3 starts + 3 completions, in interleaved order due to parallelism). Each carries `{run, total, temp, status, causes_found?, error?}`.
+`push_progress(job_id, "forensic_progress", ...)` fires 2 events per pipeline run in quick mode (1 start + 1 completion) or up to 6 in deep mode (3 starts + 3 completions, interleaved due to parallelism). Each carries `{run, total, temp, status, causes_found?, error?}`.
 
 ## Downstream consumers
 

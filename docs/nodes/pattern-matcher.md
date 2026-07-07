@@ -6,7 +6,7 @@ Runs in parallel with [`forensic_detective`](./forensic-detective.md) and [`comp
 
 ## What it does
 
-Single Gemini call (no self-consistency, no RAG). Looks at `feature_store`, `behavior_cohorts`, and the top-5 CoxPH hazard drivers, then asks Gemini 3 Flash to identify:
+Single Gemini call on the fast tier (no self-consistency, no RAG, no depth promotion — this call always uses `gemini-3.1-flash-lite` regardless of `analysis_depth`). Looks at `feature_store`, `behavior_cohorts`, and the top-5 CoxPH hazard drivers, then asks Gemini to identify:
 
 - High-risk **user segments** (biased toward the priority segment).
 - Feature-adoption **patterns** anchored to hazard ratios.
@@ -79,7 +79,7 @@ The driver string fed in:
 
 ## Wall time
 
-Typically 25–40 s on Render's free tier (single Gemini structured-output call with a large input prompt). Faster than forensic because it's one call, not three.
+Typically a few seconds on Render's free tier — a single fast-tier Gemini structured-output call. Was 25–40s under the old default model; the fast-tier switch made this one of the biggest per-node latency wins in the pipeline.
 
 ## Deep dive
 

@@ -11,9 +11,10 @@ For node-level context: [`docs/nodes/growth-hacker.md`](../nodes/growth-hacker.m
 | | |
 |---|---|
 | Provider | Groq |
-| Model ID | `llama-3.3-70b-versatile` |
+| Model ID | `openai/gpt-oss-120b` |
 | Temp | `0.6` (warmest of the three strategy agents) |
 | Keys | Round-robin via `FailoverLLM` |
+| Quirks | Factory auto-applies `reasoning_effort="low"` + `method="json_schema"` for this model. |
 
 ## Pydantic schema
 
@@ -141,7 +142,7 @@ except Exception as e:
 
 ## Wall time
 
-5–10 s.
+~3–5 s.
 
 ## Why the warmest temperature
 

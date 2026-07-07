@@ -10,7 +10,7 @@ Without this node, weak strategies (vague `target_event`, missing copy when `can
 
 ## Model
 
-Gemini 3 Flash Preview via `get_llm("gemini", temperature=0.4)`. Single call, structured output.
+Gemini via `get_llm("gemini", temperature=0.4, model=gemini_model(depth, deep_call=True))` — fast tier by default, deep tier when `analysis_depth == "deep"`. Single call, structured output.
 
 ## Inputs (from state)
 

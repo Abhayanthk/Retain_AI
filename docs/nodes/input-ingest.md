@@ -22,7 +22,9 @@ customer_id_col = next((cols_lower[k] for k in cols_lower if 'id' in k or 'user'
 tenure_col      = next((cols_lower[k] for k in cols_lower if 'tenure' in k or 'months_active' in k or k == 'months'), None)
 usage_col       = next((cols_lower[k] for k in cols_lower if 'usage' in k or 'logins' in k), None)
 support_col     = next((cols_lower[k] for k in cols_lower if 'support' in k or 'tickets' in k), None)
-plan_col        = next((cols_lower[k] for k in cols_lower if 'plan' in k or 'contract' in k), None)
+plan_col        = next((cols_lower[k] for k in cols_lower if 'plan' in k), None) \
+                  or next((cols_lower[k] for k in cols_lower if 'contract' in k), None)
+contract_col    = next((cols_lower[k] for k in cols_lower if 'contract' in k and cols_lower[k] != plan_col), None)
 churn_col       = get_churn_column(df)  # in app/graph/utils.py
 ```
 
@@ -39,7 +41,7 @@ churn_col       = get_churn_column(df)  # in app/graph/utils.py
         "row_count": int,
         "column_count": int,
         "detected_columns": {
-            "customer_id", "tenure", "usage", "support", "plan", "churn"  # values or None
+            "customer_id", "tenure", "usage", "support", "plan", "contract", "churn"  # values or None
         },
         "business_context": str,
         "industry": str,
@@ -84,4 +86,5 @@ The graph continues with a missing `normalized_df`. `data_audit` will then fail 
 
 - `normalized_df` is the **entire CSV** as a list of row dicts. For a 10k-row file that's measurable RSS pressure on Render's free tier. Downstream nodes re-read the CSV from `raw_csv_path` via DuckDB instead of pulling from state — this state key exists for completeness but is essentially write-only.
 - `detected_columns` values may be `None`. Every downstream node guards with `next((c for c in df.columns if ...), None)` as a fallback heuristic in case ingest missed.
+- `plan` and `contract` are detected as **separate** columns (e.g. "Plan Tier" vs "Contract Length") — `plan` prefers a literal `plan` match first, falling back to `contract` only if no plan column exists; `contract` then looks for a second, distinct `contract`-matching column. This split feeds the forensic `churn_by_contract` stat bucket and the CoxPH one-hot encoding — contract cadence is often the single strongest churn split in subscription data and was previously merged into `plan`, hiding it.
 - The case-insensitive scan is greedy and order-dependent — if your CSV has both `customer_id` and `user_id` columns, the first match wins (dict iteration order).

@@ -9,9 +9,12 @@ Runs in parallel with [`forensic_detective`](./forensic-detective.md) and [`patt
 ## What it does
 
 1. Substring-match `questionnaire.churn_destination` against the curated `KNOWN_COMPETITORS` table.
-2. If matched: query Chroma for `topic: competitor_positioning` chunks with signal-tag boost.
-3. Parse `Counter-play:` / `Counter-positioning:` markers out of the retrieved text into a discrete list.
-4. Surface evidence + counter_positioning into state.
+2. **Fallback match (added 2026-07):** the form's churn-destination question is a generic radio (`"To a competitor"`, `"We don't know"`, `"Build something in-house"`, …) with no competitor name in it — a direct match against step 1 almost never fires anymore. If `churn_destination` contains the word "competitor" and step 1 found nothing, fall back to matching each name in `questionnaire.competitors` (the free-text "top competitors" field) against `KNOWN_COMPETITORS` instead.
+3. If matched (by either path): query Chroma for `topic: competitor_positioning` chunks with signal-tag boost.
+4. Parse `Counter-play:` / `Counter-positioning:` markers out of the retrieved text into a discrete list.
+5. Surface evidence + counter_positioning into state.
+
+Without step 2 this node was silently dead for every real user — the destination question changed from a free-text field to a generic radio at some point, and nobody noticed the competitor match rate had dropped to ~0 until an audit compared the form's actual options against the matcher's assumptions.
 
 ## Known competitors
 

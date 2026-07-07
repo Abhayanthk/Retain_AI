@@ -84,7 +84,7 @@ A deterministic templated fallback runs on LLM failure or short output. Retrieva
 ## Cost
 
 - One Gemini call per pipeline run, ~150 input tokens, ~120 output tokens.
-- On Gemini 3 Flash Preview free tier: free, ~3–5 s latency.
+- On the fast-tier Gemini model, free tier: free, ~1–3 s latency.
 - Round-robins through the same Gemini key pool as everything else (`get_llm("gemini")`).
 
 ## Why this is a separate file (not inlined in forensic_detective.py)

@@ -2,7 +2,7 @@
 
 **File:** [`backend/app/graph/agents/discovery/forensic_detective.py`](../../backend/app/graph/agents/discovery/forensic_detective.py).
 
-Discovery Pod agent. The most expensive component in the graph — runs HyDE + 2 RAG passes + 3-way parallel self-consistency vote across Gemini.
+Discovery Pod agent. The most expensive component in the graph in deep mode — runs HyDE + 2 RAG passes + a parallel self-consistency vote across Gemini (1 run quick, 3 runs deep).
 
 For node-level context, fan-out, and consumers: [`docs/nodes/forensic-detective.md`](../nodes/forensic-detective.md).
 
@@ -19,10 +19,10 @@ Called by `forensic_detective_node` (the thin wrapper in `nodes/`). `job_id` is 
 | | |
 |---|---|
 | Provider | Google Gemini |
-| Model ID | `gemini-3-flash-preview` (default — picked up from `app/config.py:76`) |
-| Temps | `[0.2, 0.5, 0.7]` for the 3 self-consistency runs |
+| Model ID | `gemini_model(depth, deep_call=True)` — `gemini-3.1-flash-lite` in quick mode, `gemini-3.5-flash` in deep mode (`app/config.py`) |
+| Temps | `[0.3]` in quick mode; `[0.2, 0.5, 0.7]` for the 3 self-consistency runs in deep mode |
 | Keys | Round-robin across all `GOOGLE_API_KEY[_N]` via `FailoverLLM` |
-| Structured output | `safe_llm_invoke` with raw-JSON fallback |
+| Structured output | `safe_llm_invoke` — retries the structured call once, then falls back to raw-JSON parse with the schema appended to the prompt |
 
 ## Pydantic schema
 
@@ -45,19 +45,20 @@ Three fields, all consumed downstream:
 
 `run_forensic_detective` re-reads the CSV via DuckDB rather than using `state["normalized_df"]` for the same reasons as `data_audit` — independence + serialization safety.
 
-Stat buckets (each becomes `{churn_rate, size}` per label):
+Stat buckets (each becomes `{churn_rate, size, churned, p_value, significant}` per label):
 
 | Bucket | Built from |
 |---|---|
 | `churn_by_channel` | `acquisition` / `channel` column |
 | `churn_by_integration` | `integration` column (with `none`/`low`/`high` buckets if no string labels) |
-| `churn_by_plan_tier` | `plan` / `tier` / `contract` column |
+| `churn_by_plan_tier` | `plan` column |
+| `churn_by_contract` | `contract` column — detected separately from plan tier (contract cadence: monthly/quarterly/annual) |
 | `churn_by_support_volume` | Support ticket count → `none`/`low`/`high` buckets (counts of 0, 1-3, 4+) |
 | `churn_by_usage_decile` | Usage column → quartile buckets `q1`..`q4` |
 | `churn_rate_by_tenure_bucket` | `0-1mo`, `1-3mo`, `3-6mo`, `6-12mo`, `12-24mo`, `24+mo` |
 | `time_to_churn_distribution` | `mean`, `median`, `p25`, `p75`, `p90` of tenure for churned users |
 
-All buckets carry `{churn_rate, size}` so `_build_top_segments` in `diagnosis_merge` and `_best_stat_for_cause` in `evidence_dossier` can compute lost-users impact.
+`p_value`/`significant` come from a two-proportion z-test of each bucket against the rest of the population (`_apply_significance`). The candidate-cause prompt is told to discount buckets where `significant=false` — a numeric guard against building a narrative on statistical noise. All buckets also carry `{churn_rate, size}` so `_build_top_segments` in `diagnosis_merge` and `_best_stat_for_cause` in `evidence_dossier` can compute lost-users impact.
 
 ### 2. Derive signal tags
 
@@ -97,14 +98,19 @@ If the corpus is empty (e.g. `python -m app.rag.ingest` hasn't run), `evidence_b
 ### 5. Self-consistency vote — parallel
 
 ```python
-SELF_CONSISTENCY_TEMPS = [0.2, 0.5, 0.7]
-SELF_CONSISTENCY_VOTE_THRESHOLD = 2
+SELF_CONSISTENCY_TEMPS = [0.2, 0.5, 0.7]         # deep mode
+SELF_CONSISTENCY_VOTE_THRESHOLD = 2               # deep mode; quick mode uses threshold=1
+
+depth = q.get("analysis_depth")
+sc_temps = SELF_CONSISTENCY_TEMPS if depth == "deep" else [0.3]
+sc_vote_threshold = SELF_CONSISTENCY_VOTE_THRESHOLD if len(sc_temps) >= 2 else 1
+forensic_model = gemini_model(depth, deep_call=True)
 
 def _run_one(idx_temp):
     idx, t = idx_temp
-    push_progress(job_id, "forensic_progress", {"run": idx, "total": 3, "temp": t, "status": "started"})
+    push_progress(job_id, "forensic_progress", {"run": idx, "total": len(sc_temps), "temp": t, "status": "started"})
     try:
-        llm_t = get_llm("gemini", temperature=t)
+        llm_t = get_llm("gemini", model=forensic_model, temperature=t)
         resp = safe_llm_invoke(llm_t, DetectiveResult, formatted_prompt, agent_name=f"ForensicDetective(t={t})")
         push_progress(job_id, "forensic_progress", {..., "status": "completed", "causes_found": len(resp.suspected_causes)})
         return idx, t, resp, None
@@ -112,15 +118,15 @@ def _run_one(idx_temp):
         push_progress(job_id, "forensic_progress", {..., "status": "failed", "error": str(err)[:120]})
         return idx, t, None, f"temp={t}: {err}"
 
-with ThreadPoolExecutor(max_workers=3) as pool:
-    results = list(pool.map(_run_one, enumerate(SELF_CONSISTENCY_TEMPS, start=1)))
+with ThreadPoolExecutor(max_workers=len(sc_temps)) as pool:
+    results = list(pool.map(_run_one, enumerate(sc_temps, start=1)))
 ```
 
-Three Gemini calls fire **concurrently** — each grabs a different round-robin key. Wall time ≈ max(individual call latency), not sum. Without the thread-pool this loop ran sequentially and added ~70 s.
+In deep mode, three Gemini calls fire **concurrently** — each grabs a different round-robin key. Wall time ≈ max(individual call latency), not sum. Quick mode runs a single call with no thread-pool overhead.
 
 ### 6. Aggregate vote
 
-`_aggregate_detective_runs(runs)`:
+`_aggregate_detective_runs(runs, temps=sc_temps, vote_threshold=sc_vote_threshold)`:
 
 ```python
 norm_to_records = {}                        # norm_cause → [(original_phrasing, conf, citations), ...]
@@ -169,10 +175,13 @@ You are a retention analyst for a {business_model} company. Diagnose the 3 most 
 causes of churn, ranked by evidence strength.
 
 ── Business context ──
-Goal, priority_segment, competitors, churn_destination.
+Goal, priority_segment, competitors, churn_destination, churn_definition, top_channels,
+edge_cases (analyst notes / caveats — treated as ground truth that may invalidate a naive
+reading of the stats).
 
 ── Dataset statistics ──
-Overall churn rate + 7 stat buckets + signals.
+Overall churn rate + 8 stat buckets (each with p_value/significant) + signals. Prompt
+explicitly forbids building a cause primarily on a bucket where significant=false.
 
 ── CoxPH Driver Features (quantitative hazard ratios) ──
 {drivers_str}
@@ -202,13 +211,13 @@ Requirements:
     "citations": {cause: [chunk_id, ...]},              # union of LLM + per-cause RAG
     "retrieved_sources": [{id, source, topic, score}],  # all (broad + per-cause) hits
     "per_cause_evidence": {cause: [{id, source, topic, score}, ...]},  # F4
-    "statistical_evidence": {...7 buckets + time_to_churn_distribution...},
+    "statistical_evidence": {...8 buckets incl. churn_by_contract, each with p_value/significant, + time_to_churn_distribution...},
     "driver_features": [...],                           # forwarded from feature_store
     "hyde_answer": str,                                 # F13 — the hypothetical
     "consensus_metadata": {                             # F3
-        "runs_total": 3,
-        "runs_temps": [0.2, 0.5, 0.7],
-        "vote_threshold": 2,
+        "runs_total": 1,                                 # 3 in deep mode
+        "runs_temps": [0.3],                              # [0.2, 0.5, 0.7] in deep mode
+        "vote_threshold": 1,                              # 2 in deep mode
         "fallback_used": bool,
         "votes": [{cause, votes, mean_confidence, phrasings: [...]}, ...],
         "partial_failures": [str],                       # only present if some runs failed
@@ -231,15 +240,15 @@ Requirements:
 
 ## Wall time
 
-40–60 s on Render free tier with 8 Gemini keys. Breakdown:
-- HyDE: 3–5 s
+Quick mode: ~5–10 s total on Render free tier (fast-tier model, single run, no thread-pool). Deep mode: 40–60 s. Deep-mode breakdown:
+- HyDE: 1–3 s
 - Broad RAG: ~1 s (local Chroma)
 - 3× self-consistency (parallel): 30–50 s (max of three concurrent Gemini structured-output calls)
 - Per-cause RAG: ~2 s (3 Chroma queries)
 - Aggregation + citation merge: <100 ms
 
-The dominant cost is the parallel Gemini block. Adding more keys won't reduce this (it's max-bound, not sum-bound) — shrinking the prompt or output schema would.
+In deep mode the dominant cost is the parallel Gemini block — adding more keys won't reduce it (it's max-bound, not sum-bound); shrinking the prompt or output schema would. Quick mode is disproportionately faster than "1/3 of deep mode" because `gemini-3.1-flash-lite` is also simply much faster per call than the deep-tier model on structured output (bench: ~2s vs 130s+ for an equivalent 4k-token call).
 
-## Why 3 temps not random restarts
+## Why 3 temps not random restarts (deep mode)
 
-Temperatures 0.2 / 0.5 / 0.7 deliberately span low-creativity to high-creativity. A "creative" run can surface a cause the cold runs missed; a "cold" run anchors the vote in the most-likely-correct phrasing. Three runs at identical temps wouldn't have this diversity.
+Temperatures 0.2 / 0.5 / 0.7 deliberately span low-creativity to high-creativity. A "creative" run can surface a cause the cold runs missed; a "cold" run anchors the vote in the most-likely-correct phrasing. Three runs at identical temps wouldn't have this diversity. Quick mode trades this away deliberately — one run at temp 0.3 for speed, no vote to filter hallucination. That's the depth/speed trade-off the questionnaire toggle exposes to the user.

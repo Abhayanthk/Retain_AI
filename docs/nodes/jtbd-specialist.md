@@ -10,7 +10,7 @@ Apply the **Jobs-To-Be-Done** framework. For each verified root cause, identify 
 
 ## Model
 
-Groq `llama-3.3-70b-versatile` via `get_llm("groq", temperature=0.5)`. Slightly warmer than unit economist — JTBD benefits from qualitative framing.
+Groq `openai/gpt-oss-120b` via `get_llm("groq", temperature=0.5)`. Slightly warmer than unit economist — JTBD benefits from qualitative framing. `reasoning_effort="low"` and structured-output `method="json_schema"` applied automatically by the factory — see [llm-factory.md](../llm-factory.md).
 
 ## Inputs (from state)
 
@@ -19,7 +19,7 @@ Groq `llama-3.3-70b-versatile` via `get_llm("groq", temperature=0.5)`. Slightly 
 | `verified_root_causes` | Primary input — each cause maps to one or more underserved jobs. |
 | `constrained_brief` | Feasibility floor. |
 | `top_segments` | Localize identified jobs to specific segments. |
-| `questionnaire` | `business_model`, `priority_segment`, `typical_customer`, `industry`, `company_stage`, `can_ship_changes`. |
+| `questionnaire` | `business_model`, `priority_segment`, `typical_customer`, `industry`, `company_stage`, `can_ship_changes`, `has_completion_point`. |
 | `human_clarification.responses` | HITL answers. |
 | `criticism` (via `build_critic_feedback_block`) | Retry-pass feedback. |
 
@@ -52,6 +52,9 @@ Instructions:
   onboarding jobs highest.
 - If priority_segment is "High-value / enterprise", focus on social and strategic jobs.
 - For each top segment listed, name at least one job that segment is failing to get done.
+- If the product has a natural completion point (`has_completion_point == "Yes"`), churn after
+  completion may be healthy — separate "job done" churn from failure churn. If "No", frame
+  jobs as ongoing and target habit loops.
 
 Output rules (STRICT):
 - top_intervention is the single highest-impact JTBD bet. It MUST include concrete,
@@ -94,7 +97,7 @@ Try/except. On failure returns `{agent: "jtbd_specialist", error: str(e)}`.
 
 ## Wall time
 
-5–10 s.
+~3–5 s.
 
 ## Deep dive
 

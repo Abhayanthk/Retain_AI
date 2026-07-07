@@ -25,12 +25,23 @@ Single-pass structured output forces the LLM to think and format simultaneously.
 | `feature_store.predictive_churn_risk.driver_features` | Hazard ratios for `current_impact`. |
 | `evidence_dossier` | Per-problem rationale chains (F11). |
 | `competitor_research_output` | Optional competitor counter-positioning context (F14). |
-| `unit_economist_output`, `jtbd_specialist_output`, `growth_hacker_output` | Full per-agent context. |
+| `unit_economist_output`, `jtbd_specialist_output`, `growth_hacker_output` | Per-agent context — capped at 700 chars each in the prompt (was 1500). `merged_strategies` + the dossier are the source of truth for operational fields; these dumps are color, not the primary read. |
+| `questionnaire.edge_cases` | Analyst caveats — injected into both passes as ground-truth notes the playbook must not contradict. |
 
-## Pass 1 — reasoning trace (F12)
+## Model + depth toggle
 
 ```python
-llm_trace = get_llm("gemini", temperature=0.4)
+arch_model = gemini_model(depth, deep_call=True)   # fast tier quick, deep tier when analysis_depth == "deep"
+llm_trace  = get_llm("gemini", model=arch_model, temperature=0.4)
+llm_struct = get_llm("gemini", model=arch_model, temperature=0.1)
+```
+
+**Quick mode skips pass 1 entirely.** `reasoning_trace` is set to the literal string `"(skipped — quick analysis mode)"` and pass 2 runs directly with full structured context (dossier, drivers, sim, constraints) but no freeform trace to condition on. The frontend hides the "Why this playbook" toggle when `reasoning_trace` starts with `"("`. This is the single biggest quick-mode time saving on this node — a full extra LLM call removed.
+
+## Pass 1 — reasoning trace (F12, deep mode only)
+
+```python
+llm_trace = get_llm("gemini", model=arch_model, temperature=0.4)
 trace_raw = llm_trace.invoke(trace_prompt.format(...))   # no schema, plain .invoke()
 reasoning_trace = extract_llm_text(trace_raw.content)
 ```
@@ -56,7 +67,6 @@ Pass-1 failures are caught — pass 2 still runs with a `(reasoning-trace pass f
 ## Pass 2 — structured playbook
 
 ```python
-llm_struct = get_llm("gemini", temperature=0.1)
 response = safe_llm_invoke(llm_struct, Playbook, prompt.format(..., reasoning_trace=reasoning_trace[:3000]), ...)
 ```
 
@@ -149,9 +159,11 @@ Grafted onto the dumped Pydantic dict — Pydantic schema unchanged. The fronten
 
 ```python
 playbook["created_date"] = datetime.now().isoformat()
-playbook["company"] = input_context.get("industry", "SaaS")
+# input_context.industry is never actually collected by the form — falls back
+# to business_model (which is), then "SaaS". Was always empty-string before this fix.
+playbook["company"] = input_context.get("industry") or questionnaire.get("business_model") or "SaaS"
 playbook["estimated_total_lift"] = round(lift_percent, 1)
-playbook["reasoning_trace"] = reasoning_trace
+playbook["reasoning_trace"] = reasoning_trace   # "(skipped — quick analysis mode)" in quick mode
 ```
 
 ## Output (state key `final_playbook`)
@@ -180,13 +192,13 @@ Try/except. On either pass failing irrecoverably, returns `{final_playbook: {err
 
 ## Wall time
 
-45–80 s. Two Gemini calls + large structured-output schema = dominant cost in the strategy half of the pipeline.
+Quick mode: single Gemini call on the fast tier (pass 1 skipped) — a few seconds. Deep mode: two Gemini calls on the deep tier + large structured-output schema, 45–80 s — dominant cost in the strategy half of the pipeline.
 
 ## Why Gemini (not Groq)
 
 Earlier this node ran on Groq Llama 3.3 70B. Switched to Gemini for two reasons:
 
 1. **Pydantic alias support.** Llama via langchain-groq sometimes drops alias names when validating nested models. Gemini handles `Field(alias="30_60_90_roadmap")` cleanly.
-2. **Reasoning trace pass.** Pass 1 is freeform prose — Gemini's natural-language quality is noticeably better than Llama's on long structured reasoning.
+2. **Reasoning trace pass.** Pass 1 is freeform prose — Gemini's natural-language quality is noticeably better than Llama's on long structured reasoning (deep mode only, since quick mode skips pass 1).
 
 Both passes share the same `get_llm("gemini")` round-robin key pool.

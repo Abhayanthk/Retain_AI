@@ -22,7 +22,7 @@ Different review stages need different adversarial questions. Folding both into 
 | | |
 |---|---|
 | Provider | Google Gemini |
-| Model ID | `gemini-3-flash-preview` |
+| Model ID | `gemini_model(depth, deep_call=True)` — fast tier (`gemini-3.1-flash-lite`) by default, deep tier (`gemini-3.5-flash`) when `analysis_depth == "deep"` |
 | Temp | `0.4` |
 | Keys | Round-robin via `FailoverLLM` |
 

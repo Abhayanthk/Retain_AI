@@ -11,7 +11,7 @@ For node-level context: [`docs/nodes/diagnosis-merge.md`](../nodes/diagnosis-mer
 | | |
 |---|---|
 | Provider | Google Gemini |
-| Model ID | `gemini-3-flash-preview` |
+| Model ID | `gemini_model(depth, deep_call=True)` — fast tier by default, deep tier when `analysis_depth == "deep"` |
 | Temp | `0.4` (warmest discovery agent — encourages counter-arguments) |
 | Keys | Round-robin via `FailoverLLM` |
 
@@ -65,7 +65,7 @@ The two finding dicts are passed explicitly (not pulled from state) so the funct
 |---|---|
 | `forensic_findings` | `suspected_causes`, `confidence_scores`, `statistical_evidence`. |
 | `pattern_findings` | `churn_sequences` (top 3), `patterns_found` (top 5). |
-| `state.questionnaire` | `priority_segment`, `goal`, `retention_tactics`. |
+| `state.questionnaire` | `priority_segment`, `goal`, `retention_tactics`, `edge_cases` (analyst caveats). |
 
 ## Prompt
 
@@ -77,6 +77,7 @@ Your job is to challenge assumptions, find flaws, and stress-test hypotheses aga
 Priority segment: {priority_segment}
 Goal: {goal}
 Tactics already tried (so retread proposals are suspect): {already_tried}
+Analyst notes / caveats (a cause that ignores these is weak — check each hypothesis against them): {edge_cases}
 
 ## Forensic Findings
 Suspected causes: {causes}

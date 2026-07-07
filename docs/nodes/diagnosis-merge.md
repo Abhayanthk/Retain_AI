@@ -31,18 +31,19 @@ Built by `_build_top_segments(forensic_output, pattern_output, behavior_cohorts,
 
 ### 1. Forensic stat buckets
 
-Six bucket families from `forensic_output.statistical_evidence`:
+Seven bucket families from `forensic_output.statistical_evidence`:
 
 | Bucket | Family label | Descriptor |
 |---|---|---|
 | `churn_by_channel` | `channel` | `Acquisition channel = <label>` |
 | `churn_by_integration` | `integration` | `Integration status = <label>` |
 | `churn_by_plan_tier` | `plan_tier` | `Plan tier = <label>` |
+| `churn_by_contract` | `contract` | `Contract cadence = <label>` |
 | `churn_by_support_volume` | `support` | `Support ticket volume = <label>` |
 | `churn_by_usage_decile` | `usage` | `Usage decile = <label>` |
 | `churn_rate_by_tenure_bucket` | `tenure` | `Tenure bucket = <label>` |
 
-Each label in a bucket produces a row with `{segment_id: "<family>::<label>", source: <family>, size, retention_rate, churn_rate, descriptor}`.
+Each label in a bucket produces a row with `{segment_id: "<family>::<label>", source: <family>, size, retention_rate, churn_rate, descriptor, p_value, significant}` — `p_value`/`significant` are carried straight through from the forensic z-test.
 
 ### 2. Pattern matcher segments
 
@@ -83,11 +84,17 @@ For each row, do a keyword overlap match against `forensic_causes` and attach th
 ### Ranking + cap
 
 ```python
-rows.sort(key=lambda r: r["churn_rate"] * r["size"], reverse=True)
+def _impact(r):
+    base = r["churn_rate"] * r["size"]
+    if r.get("p_value") is not None and not r.get("significant", False):
+        return base * 0.6            # demote — z-test failed, likely noise
+    return base
+
+rows.sort(key=_impact, reverse=True)
 return rows[:8]
 ```
 
-`churn_rate × size` = lost-users proxy. Top 8 kept.
+`churn_rate × size` = lost-users proxy. Stat-bucket rows that failed the z-test are demoted (×0.6, not dropped) before ranking — rows from `pattern_matcher` / behavioral cohorts carry no `p_value` and are unaffected. Top 8 kept.
 
 ## Output
 
