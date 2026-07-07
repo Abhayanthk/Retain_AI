@@ -19,7 +19,7 @@ from app.graph.state import RetentionGraphState
 from app.graph.utils import safe_llm_invoke
 from app.graph.stream_utils import push_progress
 from app.graph.conditions import MAX_CRITIC_ITERATIONS
-from app.config import get_llm
+from app.config import get_llm, gemini_model
 
 class CriticEvaluation(BaseModel):
     quality_score: float = Field(description="Score from 0.0 to 1.0 reflecting strategy quality")
@@ -45,7 +45,10 @@ def strategy_critic_node(state: RetentionGraphState, config: RunnableConfig) -> 
         skeptic_output = state.get("strategy_skeptic_output", {}) or {}
         q = state.get("questionnaire", {})
 
-        llm = get_llm("gemini", temperature=0.1)
+        llm = get_llm(
+            "gemini", temperature=0.1,
+            model=gemini_model(q.get("analysis_depth"), deep_call=True),
+        )
 
         prompt = ChatPromptTemplate.from_template(
             """You are a senior strategy partner reviewing a retention strategy proposal.

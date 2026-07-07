@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, List, Dict, Tuple
 from pydantic import BaseModel, Field
 from app.graph.utils import get_churn_column, safe_llm_invoke
-from app.config import get_llm
+from app.config import get_llm, gemini_model
 from langchain_core.prompts import ChatPromptTemplate
 from app.graph.state import RetentionGraphState
 from app.rag.store import retrieve as rag_retrieve
@@ -40,14 +40,18 @@ def _normalize_cause(s: str) -> str:
 
 def _aggregate_detective_runs(
     runs: List[DetectiveResult],
+    temps: List[float] | None = None,
+    vote_threshold: int | None = None,
 ) -> Tuple[List[str], Dict[str, float], Dict[str, List[str]], Dict[str, Any]]:
     """Vote causes across self-consistency runs.
 
-    Winner = cause whose normalized text appears in >= SELF_CONSISTENCY_VOTE_THRESHOLD runs.
+    Winner = cause whose normalized text appears in >= vote_threshold runs.
     Canonical phrasing = phrasing from the highest-confidence run that produced it.
     Confidence = mean over runs that produced it. Citations = union across runs.
     Falls back to top-3 by max-confidence if vote yields nothing (e.g. only 1 run survived).
     """
+    temps = temps if temps is not None else SELF_CONSISTENCY_TEMPS
+    vote_threshold = vote_threshold if vote_threshold is not None else SELF_CONSISTENCY_VOTE_THRESHOLD
     norm_to_records: Dict[str, List[Tuple[str, float, List[str]]]] = {}
     for run in runs:
         for cause in run.suspected_causes:
@@ -60,7 +64,7 @@ def _aggregate_detective_runs(
 
     voted = [
         (norm, recs) for norm, recs in norm_to_records.items()
-        if len(recs) >= SELF_CONSISTENCY_VOTE_THRESHOLD
+        if len(recs) >= vote_threshold
     ]
     fallback_used = False
     if voted:
@@ -95,8 +99,8 @@ def _aggregate_detective_runs(
 
     metadata = {
         "runs_total": len(runs),
-        "runs_temps": SELF_CONSISTENCY_TEMPS[: len(runs)],
-        "vote_threshold": SELF_CONSISTENCY_VOTE_THRESHOLD,
+        "runs_temps": temps[: len(runs)],
+        "vote_threshold": vote_threshold,
         "fallback_used": fallback_used,
         "votes": vote_meta,
     }
@@ -501,13 +505,18 @@ Requirements:
             evidence_block=broad_evidence_block,
         )
 
-        # Self-consistency: 3 runs at different temps, vote on causes appearing in >=2/3 runs.
+        # Self-consistency: parallel runs at different temps, vote on recurring causes.
+        # Depth mode controls cost: quick = 1 run (no vote), deep = 3 runs w/ 2/3 vote.
         # Runs fire in parallel via ThreadPoolExecutor — each call uses a different Gemini
-        # key (round-robin in get_llm) so 3 concurrent requests hit 3 different slots.
-        # Wall time drops from sum(per-call) to max(per-call) — typically 3x speedup.
+        # key (round-robin in get_llm) so concurrent requests hit different slots.
+        depth = q.get("analysis_depth")
+        sc_temps = SELF_CONSISTENCY_TEMPS if (depth or "").lower() == "deep" else [0.3]
+        sc_vote_threshold = SELF_CONSISTENCY_VOTE_THRESHOLD if len(sc_temps) >= 2 else 1
+        forensic_model = gemini_model(depth, deep_call=True)
+
         runs: List[DetectiveResult] = []
         run_errors: List[str] = []
-        total_runs = len(SELF_CONSISTENCY_TEMPS)
+        total_runs = len(sc_temps)
 
         def _run_one(idx_temp: Tuple[int, float]) -> Tuple[int, float, DetectiveResult | None, str | None]:
             idx, t = idx_temp
@@ -515,7 +524,7 @@ Requirements:
                 "run": idx, "total": total_runs, "temp": t, "status": "started",
             })
             try:
-                llm_t = get_llm("gemini", temperature=t)
+                llm_t = get_llm("gemini", model=forensic_model, temperature=t)
                 resp = safe_llm_invoke(
                     llm_t, DetectiveResult, formatted_prompt,
                     agent_name=f"ForensicDetective(t={t})",
@@ -535,7 +544,7 @@ Requirements:
         with ThreadPoolExecutor(max_workers=total_runs) as pool:
             results = list(pool.map(
                 _run_one,
-                list(enumerate(SELF_CONSISTENCY_TEMPS, start=1)),
+                list(enumerate(sc_temps, start=1)),
             ))
 
         # Preserve deterministic order (sorted by run idx) for downstream voting.
@@ -551,7 +560,7 @@ Requirements:
             )
 
         candidate_causes, candidate_conf, candidate_citations, consensus_metadata = (
-            _aggregate_detective_runs(runs)
+            _aggregate_detective_runs(runs, temps=sc_temps, vote_threshold=sc_vote_threshold)
         )
         if run_errors:
             consensus_metadata["partial_failures"] = run_errors

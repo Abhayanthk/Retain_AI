@@ -13,7 +13,7 @@ from typing import Any, List, Dict
 from pydantic import BaseModel, Field
 from app.graph.state import RetentionGraphState
 from app.graph.utils import safe_llm_invoke
-from app.config import get_llm
+from app.config import get_llm, gemini_model
 from langchain_core.prompts import ChatPromptTemplate
 
 class CounterArgument(BaseModel):
@@ -58,7 +58,10 @@ def run_professional_skeptic(
         pattern_found = pattern_findings.get("patterns_found", [])
         q = state.get("questionnaire", {})
 
-        llm = get_llm("gemini", temperature=0.4, thinking_level="low")
+        llm = get_llm(
+            "gemini", temperature=0.4,
+            model=gemini_model(q.get("analysis_depth"), deep_call=True),
+        )
 
         skeptic_prompt = ChatPromptTemplate.from_template(
             """You are a Professional Skeptic reviewing churn analysis findings.

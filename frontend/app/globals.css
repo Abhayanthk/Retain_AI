@@ -92,26 +92,54 @@
   }
 }
 
+/* Tabular numerals for metric-heavy UI — used across the results dashboard. */
+@utility tnum {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* Shared animations for the results dashboard. `--glow` is set per element
+   (e.g. [--glow:rgba(168,85,247,0.55)]) so one keyframe serves every accent. */
+@theme {
+  --animate-glow-ping: glow-ping 1.6s ease-out infinite;
+  --animate-shimmer: shimmer 1.6s linear infinite;
+  --animate-fade-in: fade-in 0.4s ease forwards;
+  --animate-rise-in: rise-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.05s forwards;
+  --animate-rail-slide: rail-slide 3s linear infinite;
+  --animate-drawer-in: drawer-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+
+  @keyframes glow-ping {
+    0% { box-shadow: 0 0 0 0 var(--glow, rgba(255, 255, 255, 0.4)); }
+    100% { box-shadow: 0 0 0 10px transparent; }
+  }
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes rise-in {
+    from { transform: translateY(16px) scale(0.97); opacity: 0; }
+    to { transform: translateY(0) scale(1); opacity: 1; }
+  }
+  @keyframes rail-slide {
+    0% { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
+  }
+  @keyframes drawer-in {
+    from { transform: translateX(28px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
 ::selection { background: rgba(255, 255, 255, 0.15); }
-
-/* Glassmorphism */
-.glass-card {
-  background: rgba(255, 255, 255, 0.03);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-}
-.glass-card-elevated {
-  background: rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
 
 /* ═══════════════════════════════════════════════════
    RETAIN — Orbital Background Animations
@@ -134,7 +162,6 @@
 .orbit-2 { width: 380px; height: 380px; border-color: rgba(255,255,255,0.05); }
 .orbit-3 { width: 560px; height: 560px; border-color: rgba(255,255,255,0.04); }
 .orbit-4 { width: 740px; height: 740px; border-color: rgba(255,255,255,0.03); }
-.orbit-5 { width: 920px; height: 920px; border-color: rgba(255,255,255,0.02); }
 
 /* orbiting dots */
 @keyframes orbit-spin {
@@ -173,17 +200,8 @@
 .dot-track-3 { width: 560px; height: 560px; animation: orbit-spin 40s linear infinite; }
 .dot-track-3::after { background: rgba(255,255,255,0.35); width: 3px; height: 3px; top: -1.5px; }
 
-.dot-track-4 { width: 740px; height: 740px; animation: orbit-spin 55s linear infinite reverse; }
-.dot-track-4::after { background: rgba(255,255,255,0.25); width: 3px; height: 3px; top: -1.5px; }
-
 .dot-track-5 { width: 380px; height: 380px; animation: orbit-spin 25s linear infinite; }
 .dot-track-5::after { background: rgba(255,255,255,0.4); width: 3px; height: 3px; top: auto; bottom: -1.5px; left: 50%; }
-
-.dot-track-6 { width: 560px; height: 560px; animation: orbit-spin 35s linear infinite reverse; }
-.dot-track-6::after { background: rgba(255,255,255,0.3); width: 3px; height: 3px; top: auto; bottom: -1.5px; }
-
-.dot-track-7 { width: 920px; height: 920px; animation: orbit-spin 70s linear infinite; }
-.dot-track-7::after { background: rgba(255,255,255,0.15); width: 2px; height: 2px; top: -1px; }
 
 /* center core pulse */
 @keyframes core-pulse {
@@ -204,27 +222,3 @@
   pointer-events: none;
 }
 
-/* connector lines (subtle radial spokes) */
-@keyframes fade-spoke {
-  0%, 100% { opacity: 0.03; }
-  50% { opacity: 0.07; }
-}
-
-.spoke {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 1px;
-  height: 460px;
-  transform-origin: top center;
-  pointer-events: none;
-  animation: fade-spoke 8s ease-in-out infinite;
-}
-
-.spoke::after {
-  content: '';
-  position: absolute;
-  width: 1px;
-  height: 100%;
-  background: linear-gradient(to bottom, rgba(255,255,255,0.15), transparent);
-}

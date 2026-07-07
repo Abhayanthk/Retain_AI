@@ -40,6 +40,30 @@ def _discover_keys(base: str, max_slots: int = 32) -> list[str]:
 _GEMINI_KEYS: list[str] = _discover_keys("GOOGLE_API_KEY")
 _GROQ_KEYS:   list[str] = _discover_keys("GROQ_API_KEY")
 
+# ── Model selection ──────────────────────────────────────────────────────
+# Bench 2026-07-07 (see CLAUDE.md "LLM latency bench"): gemini-3-flash-preview
+# had 15s–350s tail latency on structured calls; 3.1-flash-lite does the same
+# call in ~2s. Lite thinks OFF by default — do NOT pass thinking_level to it.
+GEMINI_FAST_MODEL = "gemini-3.1-flash-lite"   # default: every structured/shallow call
+GEMINI_DEEP_MODEL = "gemini-3.5-flash"        # deep mode only: reasoning-heavy calls
+# Groq shootout 2026-07-07: gpt-oss-120b beat llama-3.3-70b on answer depth
+# (cites HR/p/significance correctly) at ~3s for 4k-token prompts. It rejects
+# forced tool-choice, so structured output must use method="json_schema" —
+# FailoverLLM injects that automatically for gpt-oss models.
+GROQ_MODEL = "openai/gpt-oss-120b"
+
+
+def gemini_model(depth: str | None = None, deep_call: bool = False) -> str:
+    """Pick the Gemini model for a call site.
+
+    `deep_call=True` marks reasoning-heavy sites (forensic runs, skeptics,
+    critic, architect). They get GEMINI_DEEP_MODEL only when the user chose
+    depth="deep" in the questionnaire; everything else stays on the fast model.
+    """
+    if deep_call and (depth or "").strip().lower() == "deep":
+        return GEMINI_DEEP_MODEL
+    return GEMINI_FAST_MODEL
+
 # ── State ────────────────────────────────────────────────────────────────
 
 # Rate-limited keys revive after this many seconds — provider RPM windows
@@ -88,15 +112,21 @@ def _build_raw_llm(provider: str, api_key: str, model: str | None, temperature: 
     if provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
         return ChatGoogleGenerativeAI(
-            model=model or "gemini-3-flash-preview",
+            model=model or GEMINI_FAST_MODEL,
             google_api_key=api_key,
             temperature=temperature,
             **kwargs,
         )
     if provider == "groq":
         from langchain_groq import ChatGroq
+        resolved = model or GROQ_MODEL
+        # gpt-oss at reasoning_effort medium/high intermittently leaks the JSON
+        # schema into the content channel (bench 2026-07-07: 2/4 structured
+        # failures at medium, 4/4 pass at low). Low is also faster (~3s).
+        if "gpt-oss" in resolved and "reasoning_effort" not in kwargs:
+            kwargs["reasoning_effort"] = "low"
         return ChatGroq(
-            model=model or "llama-3.3-70b-versatile",
+            model=resolved,
             groq_api_key=api_key,
             temperature=temperature,
             **kwargs,
@@ -177,6 +207,11 @@ class FailoverLLM:
         return self._call_with_failover(lambda llm: llm.invoke(*args, **kwargs))
 
     def with_structured_output(self, schema, **so_kwargs):
+        # gpt-oss models on Groq 400 on the default forced tool-choice method;
+        # they support strict json_schema response format instead.
+        effective_model = self.model or (GROQ_MODEL if self.provider == "groq" else GEMINI_FAST_MODEL)
+        if self.provider == "groq" and "gpt-oss" in effective_model and "method" not in so_kwargs:
+            so_kwargs["method"] = "json_schema"
         return _StructuredFailoverProxy(self, schema, so_kwargs)
 
     # Forward unknown attribute access (e.g. .bind_tools) to current llm

@@ -58,7 +58,7 @@ async def adaptive_hitl_node(state: RetentionGraphState, config: RunnableConfig)
         priority_segment = q.get("priority_segment", "")
         competitors = q.get("competitors", [])
 
-        llm = get_llm("gemini", temperature=0.3, thinking_level="low")
+        llm = get_llm("gemini", temperature=0.3)
 
         prompt = ChatPromptTemplate.from_template(
             """You generate targeted clarification questions for a retention analyst.

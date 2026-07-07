@@ -50,7 +50,7 @@ def run_pattern_matcher(state: RetentionGraphState) -> dict[str, Any]:
         q = state.get("questionnaire", {})
         driver_features = (feature_store.get("predictive_churn_risk", {}) or {}).get("driver_features", []) or []
 
-        llm = get_llm("gemini", temperature=0.2, thinking_level="low")
+        llm = get_llm("gemini", temperature=0.2)
 
         prompt = ChatPromptTemplate.from_template(
             """Analyze these user behavior cohorts and features to identify recurring churn patterns and segments for a {business_model} company.

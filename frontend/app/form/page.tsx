@@ -43,6 +43,7 @@ interface FormData {
   topGoal: string;
   timeline: string;
   anythingElse: string;
+  analysisDepth: string;
 }
 
 const INITIAL: FormData = {
@@ -51,7 +52,7 @@ const INITIAL: FormData = {
   revenueModel: "", pricingFlexibility: [], coreFeatures: "", canShipChanges: "",
   hasCompletionPoint: "", topChannels: [], topCompetitors: "", churnDestination: "",
   supportModel: "", retentionTactics: [], prioritySegment: "", prioritySegmentOther: "",
-  topGoal: "", timeline: "", anythingElse: "",
+  topGoal: "", timeline: "", anythingElse: "", analysisDepth: "quick",
 };
 
 const STEPS = ["About & Data", "Business & Revenue", "Product & Market", "Ops & Goals", "Final"];
@@ -265,6 +266,7 @@ export default function FormPage() {
           has_completion_point: form.hasCompletionPoint, churn_destination: form.churnDestination,
           retention_tactics: form.retentionTactics, timeline: form.timeline,
           typical_customer: form.typicalCustomer,
+          analysis_depth: form.analysisDepth || "quick",
         },
       };
 
@@ -428,6 +430,15 @@ export default function FormPage() {
             <Textarea id="q8-extra" value={form.anythingElse} onChange={(e) => set("anythingElse", e.target.value)}
               placeholder="e.g. Win-back campaign failed — 12% ROI, $8K cost. CEO wants upsell focus. AI feature launching in 4 months…"
               className={`${INPUT_CLS} min-h-[140px] resize-none leading-[1.7]`} />
+            <Divider />
+            <QuestionTitle>How deep should the analysis go?</QuestionTitle>
+            <Hint>Quick uses the fastest models end-to-end. Deep runs multi-pass reasoning on heavier models — better causes and a richer playbook, but slower.</Hint>
+            <div className="flex flex-col gap-1 mb-6">
+              <RadioOption value="quick" label="Quick scan" sublabel="~2–4 min · fastest models, single-pass diagnosis"
+                selected={form.analysisDepth === "quick"} onSelect={(v) => set("analysisDepth", v)} />
+              <RadioOption value="deep" label="Deep analysis" sublabel="~10–20 min · multi-pass reasoning, maximum depth"
+                selected={form.analysisDepth === "deep"} onSelect={(v) => set("analysisDepth", v)} />
+            </div>
             <SubmitBtn onClick={submit} submitting={submitting} />
           </div>
         );

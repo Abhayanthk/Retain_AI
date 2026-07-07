@@ -37,6 +37,7 @@ const DEMO_FORM_STATE = {
   timeline: "90-day plan",
   anythingElse:
     "Monthly contract subscribers are churning at near-100% — we suspect this is partly definitional (the dataset labels them all churn=1 once their contract ends) but want strategies that still treat short-cadence subscribers as a real cohort.",
+  analysisDepth: "quick",
 };
 
 export default function HomePage() {

@@ -16,7 +16,7 @@ from datetime import datetime
 from langchain_core.prompts import ChatPromptTemplate
 from app.graph.state import RetentionGraphState
 from app.graph.utils import safe_llm_invoke, extract_llm_text
-from app.config import get_llm
+from app.config import get_llm, gemini_model
 
 class ExecutiveSummary(BaseModel):
     total_problems_identified: int
@@ -133,8 +133,13 @@ def execution_architect_node(state: RetentionGraphState) -> dict:
         # F12: two-pass synthesis. Pass 1 generates a freeform reasoning trace at
         # higher temp; pass 2 (lower temp, structured) consumes that trace to
         # produce the final Pydantic-validated playbook.
-        llm_trace = get_llm("gemini", temperature=0.4)
-        llm_struct = get_llm("gemini", temperature=0.1)
+        # Depth mode: quick skips pass 1 entirely and runs pass 2 on the fast
+        # model; deep runs both passes on the deep model.
+        depth = questionnaire.get("analysis_depth")
+        is_deep = (depth or "").strip().lower() == "deep"
+        arch_model = gemini_model(depth, deep_call=True)
+        llm_trace = get_llm("gemini", model=arch_model, temperature=0.4)
+        llm_struct = get_llm("gemini", model=arch_model, temperature=0.1)
 
         prompt = ChatPromptTemplate.from_template(
             """You are a senior retention strategist creating a final execution playbook for a real company.
@@ -314,30 +319,35 @@ Cover these questions in order, in plain prose (no JSON, no headings deeper than
 Output: continuous prose. Max ~450 words. Be specific. No fluff."""
         )
 
-        try:
-            trace_raw = llm_trace.invoke(
-                trace_prompt.format(
-                    root_causes=root_causes_str[:1500],
-                    dossier=dossier_str,
-                    top_segments=top_segments_str[:800],
-                    drivers=drivers_str[:600],
-                    lift=lift_percent,
-                    simulations=json.dumps(simulations.get("intervention_impacts", []))[:800]
-                        if simulations else "No simulation data",
-                    criticism=json.dumps(criticism)[:600] if criticism else "No critic feedback",
-                    competitor_research=competitor_str[:600],
-                    edge_cases=edge_cases_str,
-                    can_ship=questionnaire.get("can_ship_changes", "Unknown"),
-                    support_model=questionnaire.get("support_model", "Unknown"),
-                    pricing_flex=", ".join(questionnaire.get("pricing_flexibility", [])) or "Unspecified",
-                    timeline=questionnaire.get("timeline", "Unspecified"),
-                    already_tried=", ".join(questionnaire.get("retention_tactics", [])) or "None",
+        if not is_deep:
+            # Quick mode: skip the freeform trace LLM call — pass 2 still gets
+            # full structured context (dossier, drivers, sim, constraints).
+            reasoning_trace = "(skipped — quick analysis mode)"
+        else:
+            try:
+                trace_raw = llm_trace.invoke(
+                    trace_prompt.format(
+                        root_causes=root_causes_str[:1500],
+                        dossier=dossier_str,
+                        top_segments=top_segments_str[:800],
+                        drivers=drivers_str[:600],
+                        lift=lift_percent,
+                        simulations=json.dumps(simulations.get("intervention_impacts", []))[:800]
+                            if simulations else "No simulation data",
+                        criticism=json.dumps(criticism)[:600] if criticism else "No critic feedback",
+                        competitor_research=competitor_str[:600],
+                        edge_cases=edge_cases_str,
+                        can_ship=questionnaire.get("can_ship_changes", "Unknown"),
+                        support_model=questionnaire.get("support_model", "Unknown"),
+                        pricing_flex=", ".join(questionnaire.get("pricing_flexibility", [])) or "Unspecified",
+                        timeline=questionnaire.get("timeline", "Unspecified"),
+                        already_tried=", ".join(questionnaire.get("retention_tactics", [])) or "None",
+                    )
                 )
-            )
-            reasoning_trace = extract_llm_text(trace_raw.content)
-        except Exception as trace_err:
-            # Trace is non-essential — pass 2 still has full structured context.
-            reasoning_trace = f"(reasoning-trace pass failed: {trace_err})"
+                reasoning_trace = extract_llm_text(trace_raw.content)
+            except Exception as trace_err:
+                # Trace is non-essential — pass 2 still has full structured context.
+                reasoning_trace = f"(reasoning-trace pass failed: {trace_err})"
 
         response = safe_llm_invoke(
             llm_struct, Playbook,

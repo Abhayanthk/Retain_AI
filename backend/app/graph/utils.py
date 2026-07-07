@@ -94,21 +94,34 @@ def safe_llm_invoke(llm, schema, prompt_text: str, agent_name: str = "Unknown"):
     import json
     import re
 
-    # ── Attempt 1: Structured output (function calling) ──────────────
+    # ── Attempt 1: Structured output, up to 2 tries ───────────────────
+    # Some models occasionally emit garbage on a structured call (e.g. gpt-oss
+    # echoing the schema at higher temps) — one immediate retry usually lands.
     fallback_reason = None
-    try:
-        structured_llm = llm.with_structured_output(schema)
-        result = structured_llm.invoke(prompt_text)
-        if result is not None:
-            return result
-        fallback_reason = "structured output returned None"
-    except Exception as e:
-        fallback_reason = f"{type(e).__name__}: {str(e)[:120]}"
+    structured_llm = llm.with_structured_output(schema)
+    for attempt in (1, 2):
+        try:
+            result = structured_llm.invoke(prompt_text)
+            if result is not None:
+                return result
+            fallback_reason = "structured output returned None"
+        except Exception as e:
+            fallback_reason = f"{type(e).__name__}: {str(e)[:120]}"
+        print(f"[safe_llm_invoke] {agent_name}: structured attempt {attempt} failed ({fallback_reason})", flush=True)
 
-    # ── Attempt 2: Raw invoke + JSON extraction ──────────────────────
-    # This is a full second LLM call — log it so silent 2x latency/cost is visible.
-    print(f"[safe_llm_invoke] {agent_name}: falling back to raw parse ({fallback_reason})", flush=True)
-    raw_response = llm.invoke(prompt_text)
+    # ── Attempt 3: Raw invoke + JSON extraction ──────────────────────
+    # This is a full extra LLM call — log it so silent 2x latency/cost is visible.
+    # Append an explicit JSON-only instruction with the full schema: the original
+    # prompt has no such hint, so without it the raw fallback tends to produce
+    # markdown prose that can never parse.
+    print(f"[safe_llm_invoke] {agent_name}: falling back to raw parse", flush=True)
+    schema_hint = json.dumps(schema.model_json_schema())
+    raw_response = llm.invoke(
+        prompt_text
+        + "\n\nReturn ONLY a valid JSON object matching this schema — no markdown fences, no prose. "
+        + "Every required field must be present:\n"
+        + schema_hint
+    )
     content = extract_llm_text(raw_response.content)
 
     # Strip markdown code fences
